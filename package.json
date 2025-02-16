@@ -1,0 +1,200 @@
+{
+  "name": "falalo",
+  "displayName": "falalo",
+  "description": "AI-powered coding assistant",
+  "version": "0.0.1",
+  "publisher": "falalo",
+  "author": {
+    "name": "Omar Maarouf"
+  },
+  "private": false,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/omarmaaroufoffice/falalo.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages",
+    "Machine Learning",
+    "Snippets",
+    "Education"
+  ],
+  "keywords": [
+    "ai",
+    "chat",
+    "code",
+    "assistant",
+    "openai",
+    "formatting",
+    "uppercase",
+    "copilot",
+    "code-assistant",
+    "machine-learning"
+  ],
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
+  "icon": "images/icon.png",
+  "bugs": {
+    "url": "https://github.com/omarmaaroufoffice/falalo/issues"
+  },
+  "homepage": "https://github.com/omarmaaroufoffice/falalo#readme",
+  "badges": [
+    {
+      "url": "https://img.shields.io/github/license/omarmaaroufoffice/falalo",
+      "href": "https://github.com/omarmaaroufoffice/falalo/blob/main/LICENSE",
+      "description": "MIT License"
+    },
+    {
+      "url": "https://img.shields.io/github/package-json/v/omarmaaroufoffice/falalo",
+      "href": "https://github.com/omarmaaroufoffice/falalo/releases",
+      "description": "Extension Version"
+    }
+  ],
+  "qna": "https://github.com/omarmaaroufoffice/falalo/discussions",
+  "sponsor": {
+    "url": "https://github.com/sponsors/omarmaaroufoffice"
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:falalo.startChat",
+    "onCommand:falalo.reviewCode",
+    "onCommand:falalo.includeInContext",
+    "onCommand:falalo.excludeFromContext",
+    "onCommand:falalo.showContextItems",
+    "onCommand:falalo.organizeFiles",
+    "onView:falalo.chatView",
+    "onView:falalo.contextFilesView"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "falalo.startChat",
+        "title": "Start AI Chat"
+      },
+      {
+        "command": "falalo.reviewCode",
+        "title": "AI Code Review"
+      },
+      {
+        "command": "falalo.includeInContext",
+        "title": "Include in AI Context"
+      },
+      {
+        "command": "falalo.excludeFromContext",
+        "title": "Exclude from AI Context"
+      },
+      {
+        "command": "falalo.showContextItems",
+        "title": "Show AI Context Items"
+      },
+      {
+        "command": "falalo.organizeFiles",
+        "title": "Organize Files"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "falalo-sidebar",
+          "title": "Falalo AI Assistant",
+          "icon": "images/icon.png"
+        }
+      ]
+    },
+    "views": {
+      "falalo-sidebar": [
+        {
+          "type": "webview",
+          "id": "falalo.chatView",
+          "name": "AI Chat"
+        },
+        {
+          "type": "webview",
+          "id": "falalo.contextFilesView",
+          "name": "Context Files"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Falalo",
+      "properties": {
+        "falalo.openAIApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Your OpenAI API key"
+        },
+        "falalo.contextInclusions": {
+          "type": "array",
+          "default": [],
+          "description": "Files to include in AI context"
+        },
+        "falalo.contextExclusions": {
+          "type": "array",
+          "default": [],
+          "description": "Files to exclude from AI context"
+        },
+        "falalo.maxContextFiles": {
+          "type": "number",
+          "default": 500,
+          "description": "Maximum number of files to include in context"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "webpack --mode production",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "pretest": "webpack && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/minimatch": "^5.1.2",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "18.x",
+    "@types/node-fetch": "^2.6.4",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "@vscode/test-cli": "^0.0.4",
+    "@vscode/test-electron": "^2.3.8",
+    "assert": "^2.1.0",
+    "browserify-zlib": "^0.2.0",
+    "buffer": "^6.0.3",
+    "crypto-browserify": "^3.12.1",
+    "eslint": "^8.56.0",
+    "https-browserify": "^1.0.0",
+    "os-browserify": "^0.3.0",
+    "path-browserify": "^1.0.1",
+    "process": "^0.11.10",
+    "stream-browserify": "^3.0.0",
+    "stream-http": "^3.2.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.3",
+    "url": "^0.11.4",
+    "util": "^0.12.5",
+    "webpack": "^5.90.3",
+    "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {
+    "bufferutil": "^4.0.8",
+    "encoding": "^0.1.13",
+    "glob": "^7.2.0",
+    "minimatch": "^5.1.0",
+    "node-fetch": "^2.6.7",
+    "openai": "^4.20.1",
+    "puppeteer": "^21.7.0",
+    "sharp": "^0.33.2",
+    "utf-8-validate": "^6.0.3",
+    "ws": "^8.16.0"
+  }
+}

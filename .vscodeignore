@@ -1,0 +1,48 @@
+.vscode/**
+.vscode-test/**
+src/**
+.gitignore
+.yarnrc
+webpack.config.js
+vsc-extension-quickstart.md
+**/tsconfig.json
+**/.eslintrc.json
+**/*.map
+**/*.ts
+create-icon.js
+.github/**
+test/**
+out/test/**
+
+# Keep only necessary node_modules
+node_modules/**
+!node_modules/node-fetch/**
+!node_modules/openai/**
+!node_modules/sharp/**
+!node_modules/puppeteer/**
+!node_modules/bufferutil/**
+!node_modules/utf-8-validate/**
+!node_modules/ws/**
+!node_modules/encoding/**
+
+# Keep necessary build files
+!out/extension.js
+!out/extension.js.map
+
+# Keep media and resources
+!media/**
+!images/**
+!screenshots/**
+
+# Documentation
+!README.md
+!LICENSE
+!CHANGELOG.md
+
+# Exclude development files
+.eslintignore
+.eslintrc.js
+.prettierrc
+.prettierignore
+tsconfig.tsbuildinfo
+*.vsix
