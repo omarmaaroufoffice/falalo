@@ -9,7 +9,6 @@ import { Minimatch } from 'minimatch';
 import { FileOrganizer } from './fileOrganizer';
 import { FileInfo, OrganizeOptions } from './fileOrganizer';
 import { ScreenshotManager } from './screenshot';
-import { LogManager } from './logManager';
 
 // Add helper functions
 function processResponseWithCodeBlocks(response: string): string {
@@ -695,7 +694,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
 								// Process and display response
 								let processedResponse = processResponseWithCodeBlocks(response);
-
+								
 								// Add step completion message
 								processedResponse = `<div class="success-message">✓ Step ${taskPlan.currentStep + 1} completed: ${currentStep.description}</div>\n${processedResponse}`;
 								
@@ -738,7 +737,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 								text: 'All tasks completed successfully!',
 								status: 'success'
 							});
-							
+
 							webview.postMessage({
 								type: 'aiResponse',
 								text: `<div class="success-message">✨ All tasks completed successfully! The project has been set up according to your request.</div>`,
@@ -1279,60 +1278,6 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 	public dispose() {
 		this.screenshotManager.cleanup();
 	}
-
-	private async handleUserMessage(message: string, webview: vscode.Webview): Promise<void> {
-		try {
-			// Check if auto context selection is enabled
-			const autoSelector = this.contextManager.getAutoSelector();
-			if (autoSelector?.isEnabled()) {
-				const selection = await autoSelector.selectRelevantFiles(message);
-				
-				// Clear existing context
-				await this.contextManager.excludeAllFiles();
-				
-				// Add selected files to context
-				for (const file of selection.selectedFiles) {
-					await this.contextManager.addToContext(file);
-				}
-
-				// Update context files view
-				await this.updateContextFiles(webview);
-
-				// Show selection info in chat with improved formatting
-				const confidencePercentage = Math.round(selection.confidence * 100);
-				const confidenceEmoji = confidencePercentage > 80 ? '🟢' : confidencePercentage > 50 ? '🟡' : '🔴';
-				
-				const selectionMessage = `${confidenceEmoji} **Auto-selected context files** (${confidencePercentage}% confidence)\n\n` +
-					`*Explanation:* ${selection.explanation}\n\n` +
-					`*Selected files:*\n${selection.selectedFiles.map(file => `- \`${file}\``).join('\n')}`;
-
-				webview.postMessage({
-					type: 'addMessage',
-					message: {
-						role: 'system',
-						content: selectionMessage
-					}
-				});
-			}
-
-			// Continue with existing message handling
-			webview.postMessage({
-				type: 'addMessage',
-				message: { role: 'user', content: message }
-			});
-
-			// ... rest of the existing code ...
-		} catch (error) {
-			LogManager.getInstance().logError(error, 'handleUserMessage');
-			webview.postMessage({
-				type: 'addMessage',
-				message: {
-					role: 'error',
-					content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
-				}
-			});
-		}
-	}
 }
 
 // Add ContextFilesViewProvider class after ChatViewProvider
@@ -1369,60 +1314,65 @@ class ContextFilesViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async updateContextFiles() {
-        if (!this._view) {
-            return;
-        }
+        if (!this._view) return;
 
         const files = await this.contextManager.getContextFiles();
-        const autoSelector = this.contextManager.getAutoSelector();
-        const lastSelection = autoSelector?.getLastSelection();
-        
+        const fileDetails = await Promise.all(files.map(async fileInfo => {
+            const fullPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, fileInfo.relativePath);
+            try {
+                const stats = await fs.promises.stat(fullPath);
+                const size = stats.size < 1024 ? `${stats.size} B` : 
+                            stats.size < 1024 * 1024 ? `${(stats.size/1024).toFixed(1)} KB` : 
+                            `${(stats.size/1024/1024).toFixed(1)} MB`;
+                
+                return {
+                    path: fileInfo.relativePath,
+                    name: path.basename(fileInfo.relativePath),
+                    size,
+                    modified: stats.mtime.toLocaleString()
+                };
+            } catch (error) {
+                console.error(`Error reading file ${fileInfo.relativePath}:`, error);
+                return null;
+            }
+        }));
+
         this._view.webview.postMessage({
             type: 'updateFiles',
-            files: files,
-            autoContextEnabled: autoSelector?.isEnabled() || false,
-            autoSelection: lastSelection
+            files: fileDetails.filter((file): file is NonNullable<typeof file> => file !== null)
         });
     }
 
     private setWebviewMessageListener(webview: vscode.Webview) {
-        webview.onDidReceiveMessage(async (message) => {
-            const autoSelector = this.contextManager.getAutoSelector();
-
-            switch (message.command) {
-                case 'toggleAutoContext':
-                    if (autoSelector) {
-                        const isEnabled = autoSelector.toggleEnabled();
-                        webview.postMessage({
-                            type: 'autoContextStatus',
-                            enabled: isEnabled
-                        });
-                        this.updateContextFiles();
-                    }
-                    break;
-                case 'removeFile':
-                    if (message.path) {
-                        const fullPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, message.path);
-                        await this.contextManager.removeFromContext(fullPath);
-                        await this.updateContextFiles();
-                    }
-                    break;
-                case 'openFile':
-                    if (message.path) {
-                        const fullPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, message.path);
-                        const doc = await vscode.workspace.openTextDocument(fullPath);
-                        await vscode.window.showTextDocument(doc);
-                    }
-                    break;
-                case 'includeAll':
-                    await this.includeAllFiles();
-                    break;
-                case 'excludeAll':
-                    await this.excludeAllFiles();
-                    break;
-                case 'includeStructure':
-                    await this.includeStructureOnly();
-                    break;
+        webview.onDidReceiveMessage(async message => {
+            try {
+                switch (message.type) {
+                    case 'removeFile':
+                        if (message.path) {
+                            const fullPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, message.path);
+                            await this.contextManager.removeFromContext(fullPath);
+                            await this.updateContextFiles();
+                        }
+                        break;
+                    case 'openFile':
+                        if (message.path) {
+                            const fullPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, message.path);
+                            const doc = await vscode.workspace.openTextDocument(fullPath);
+                            await vscode.window.showTextDocument(doc);
+                        }
+                        break;
+                    case 'includeAll':
+                        await this.includeAllFiles();
+                        break;
+                    case 'excludeAll':
+                        await this.excludeAllFiles();
+                        break;
+                    case 'includeStructure':
+                        await this.includeStructureOnly();
+                        break;
+                }
+            } catch (error) {
+                vscode.window.showErrorMessage(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
             }
         });
     }
@@ -1471,387 +1421,323 @@ class ContextFilesViewProvider implements vscode.WebviewViewProvider {
         const nonce = this.getNonce();
         
         return `<!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Context Files</title>
-            <style>
-                body {
-                    padding: 10px;
-                    font-family: var(--vscode-font-family);
-                    color: var(--vscode-editor-foreground);
-                    background: var(--vscode-editor-background);
-                }
-                .file-tree {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 4px;
-                    margin-top: 10px;
-                }
-                .tree-item {
-                    display: flex;
-                    flex-direction: column;
-                }
-                .tree-item-content {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    padding: 6px 8px;
-                    background: var(--vscode-input-background);
-                    border: 1px solid var(--vscode-input-border);
-                    border-radius: 4px;
-                    cursor: pointer;
-                }
-                .tree-item-content:hover {
-                    background: var(--vscode-list-hoverBackground);
-                }
-                .tree-item-children {
-                    margin-left: 20px;
-                    display: none;
-                }
-                .tree-item.expanded > .tree-item-children {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 4px;
-                }
-                .tree-item-header {
-                    display: flex;
-                    align-items: center;
-                    gap: 6px;
-                    flex: 1;
-                }
-                .tree-item-icon {
-                    font-size: 1.1em;
-                    min-width: 16px;
-                }
-                .tree-item-name {
-                    flex: 1;
-                }
-                .tree-item-details {
-                    font-size: 0.9em;
-                    color: var(--vscode-descriptionForeground);
-                }
-                .remove-button {
-                    padding: 4px 8px;
-                    background: var(--vscode-button-secondaryBackground);
-                    color: var(--vscode-button-secondaryForeground);
-                    border: none;
-                    border-radius: 3px;
-                    cursor: pointer;
-                    opacity: 0;
-                    transition: opacity 0.2s;
-                }
-                .tree-item-content:hover .remove-button {
-                    opacity: 1;
-                }
-                .remove-button:hover {
-                    background: var(--vscode-button-secondaryHoverBackground);
-                }
-                .empty-message {
-                    text-align: center;
-                    padding: 20px;
-                    color: var(--vscode-descriptionForeground);
-                }
-                .header {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 10px;
-                    margin-bottom: 10px;
-                }
-                .header-top {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                }
-                .header-buttons {
-                    display: flex;
-                    gap: 8px;
-                }
-                .action-button {
-                    padding: 4px 8px;
-                    background: var(--vscode-button-background);
-                    color: var(--vscode-button-foreground);
-                    border: none;
-                    border-radius: 3px;
-                    cursor: pointer;
-                    font-size: 12px;
-                }
-                .action-button:hover {
-                    background: var(--vscode-button-hoverBackground);
-                }
-                .secondary-button {
-                    background: var(--vscode-button-secondaryBackground);
-                    color: var(--vscode-button-secondaryForeground);
-                }
-                .secondary-button:hover {
-                    background: var(--vscode-button-secondaryHoverBackground);
-                }
-                .file-count {
-                    font-size: 0.9em;
-                    color: var(--vscode-descriptionForeground);
-                }
-                .auto-context-toggle {
-                    display: flex;
-                    align-items: center;
-                    padding: 10px;
-                    margin-bottom: 10px;
-                    background: var(--vscode-editor-background);
-                    border: 1px solid var(--vscode-input-border);
-                    border-radius: 4px;
-                }
-                .auto-selection-info {
-                    margin: 10px 0;
-                    padding: 10px;
-                    background: var(--vscode-editor-inactiveSelectionBackground);
-                    border-radius: 4px;
-                }
-                .auto-selection-files {
-                    margin-top: 8px;
-                    padding-left: 20px;
-                }
-                .confidence-indicator {
-                    display: inline-block;
-                    padding: 2px 6px;
-                    border-radius: 3px;
-                    font-size: 12px;
-                    margin-left: 8px;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="auto-context-toggle">
-                <label>
-                    <input type="checkbox" id="autoContextToggle" />
-                    Enable Auto Context Selection
-                </label>
-            </div>
-            <div id="autoSelectionInfo" class="auto-selection-info" style="display: none;">
-                <div id="autoSelectionExplanation"></div>
-                <div id="autoSelectionConfidence"></div>
-                <ul id="autoSelectionFiles" class="auto-selection-files"></ul>
-            </div>
-            <div class="button-container">
-                <button class="action-button" onclick="includeAll()">Include All</button>
-                <button class="action-button" onclick="includeStructure()">Include Structure Only</button>
-                <button class="action-button secondary-button" onclick="excludeAll()">Exclude All</button>
-                <button class="action-button secondary-button" onclick="toggleAll()">Expand/Collapse All</button>
-            </div>
-            <div id="fileTree" class="file-tree"></div>
-
-            <script nonce="${nonce}">
-                const vscode = acquireVsCodeApi();
-                const fileTree = document.getElementById('fileTree');
-                const fileCount = document.getElementById('fileCount');
-                let isAllExpanded = false;
-                let currentFiles = [];
-
-                window.addEventListener('message', event => {
-                    const message = event.data;
-                    switch (message.type) {
-                        case 'updateFiles':
-                            currentFiles = message.files;
-                            updateFileTree(message.files);
-                            break;
-                        case 'autoContextStatus':
-                            autoContextToggle.checked = message.enabled;
-                            break;
-                        case 'updateFiles':
-                            updateFileList(message.files);
-                            updateAutoSelectionInfo(message.autoSelection, message.autoContextEnabled);
-                            break;
+        <html>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none';
+                    img-src ${webview.cspSource} https: data:;
+                    script-src ${webview.cspSource} 'nonce-${nonce}';
+                    style-src ${webview.cspSource} 'unsafe-inline';
+                    font-src ${webview.cspSource};
+                    connect-src ${webview.cspSource} https:;">
+                <style>
+                    body {
+                        padding: 10px;
+                        font-family: var(--vscode-font-family);
+                        color: var(--vscode-editor-foreground);
+                        background: var(--vscode-editor-background);
                     }
-                });
+                    .file-tree {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 4px;
+                        margin-top: 10px;
+                    }
+                    .tree-item {
+                        display: flex;
+                        flex-direction: column;
+                    }
+                    .tree-item-content {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        padding: 6px 8px;
+                        background: var(--vscode-input-background);
+                        border: 1px solid var(--vscode-input-border);
+                        border-radius: 4px;
+                        cursor: pointer;
+                    }
+                    .tree-item-content:hover {
+                        background: var(--vscode-list-hoverBackground);
+                    }
+                    .tree-item-children {
+                        margin-left: 20px;
+                        display: none;
+                    }
+                    .tree-item.expanded > .tree-item-children {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 4px;
+                    }
+                    .tree-item-header {
+                        display: flex;
+                        align-items: center;
+                        gap: 6px;
+                        flex: 1;
+                    }
+                    .tree-item-icon {
+                        font-size: 1.1em;
+                        min-width: 16px;
+                    }
+                    .tree-item-name {
+                        flex: 1;
+                    }
+                    .tree-item-details {
+                        font-size: 0.9em;
+                        color: var(--vscode-descriptionForeground);
+                    }
+                    .remove-button {
+                        padding: 4px 8px;
+                        background: var(--vscode-button-secondaryBackground);
+                        color: var(--vscode-button-secondaryForeground);
+                        border: none;
+                        border-radius: 3px;
+                        cursor: pointer;
+                        opacity: 0;
+                        transition: opacity 0.2s;
+                    }
+                    .tree-item-content:hover .remove-button {
+                        opacity: 1;
+                    }
+                    .remove-button:hover {
+                        background: var(--vscode-button-secondaryHoverBackground);
+                    }
+                    .empty-message {
+                        text-align: center;
+                        padding: 20px;
+                        color: var(--vscode-descriptionForeground);
+                    }
+                    .header {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 10px;
+                        margin-bottom: 10px;
+                    }
+                    .header-top {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                    }
+                    .header-buttons {
+                        display: flex;
+                        gap: 8px;
+                    }
+                    .action-button {
+                        padding: 4px 8px;
+                        background: var(--vscode-button-background);
+                        color: var(--vscode-button-foreground);
+                        border: none;
+                        border-radius: 3px;
+                        cursor: pointer;
+                        font-size: 12px;
+                    }
+                    .action-button:hover {
+                        background: var(--vscode-button-hoverBackground);
+                    }
+                    .secondary-button {
+                        background: var(--vscode-button-secondaryBackground);
+                        color: var(--vscode-button-secondaryForeground);
+                    }
+                    .secondary-button:hover {
+                        background: var(--vscode-button-secondaryHoverBackground);
+                    }
+                    .file-count {
+                        font-size: 0.9em;
+                        color: var(--vscode-descriptionForeground);
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <div class="header-top">
+                        <h3>Context Files</h3>
+                        <span class="file-count" id="fileCount"></span>
+                    </div>
+                    <div class="header-buttons">
+                        <button class="action-button" onclick="includeAll()">Include All</button>
+                        <button class="action-button" onclick="includeStructure()">Include Structure Only</button>
+                        <button class="action-button secondary-button" onclick="excludeAll()">Exclude All</button>
+                        <button class="action-button secondary-button" onclick="toggleAll()">Expand/Collapse All</button>
+                    </div>
+                </div>
+                <div id="fileTree" class="file-tree"></div>
 
-                function includeAll() {
-                    vscode.postMessage({ type: 'includeAll' });
-                }
+                <script nonce="${nonce}">
+                    const vscode = acquireVsCodeApi();
+                    const fileTree = document.getElementById('fileTree');
+                    const fileCount = document.getElementById('fileCount');
+                    let isAllExpanded = false;
+                    let currentFiles = [];
 
-                function excludeAll() {
-                    vscode.postMessage({ type: 'excludeAll' });
-                }
-
-                function includeStructure() {
-                    vscode.postMessage({ type: 'includeStructure' });
-                }
-
-                function buildFileTree(files) {
-                    const root = { children: new Map() };
-                    
-                    files.forEach(file => {
-                        const parts = file.path.split('/');
-                        let current = root;
-                        
-                        for (let i = 0; i < parts.length; i++) {
-                            const part = parts[i];
-                            const currentPath = parts.slice(0, i + 1).join('/');
-                            
-                            if (!current.children.has(part)) {
-                                current.children.set(part, {
-                                    name: part,
-                                    path: currentPath,
-                                    isDirectory: i < parts.length - 1,
-                                    size: i === parts.length - 1 ? file.size : null,
-                                    modified: i === parts.length - 1 ? file.modified : null,
-                                    children: new Map()
-                                });
-                            }
-                            current = current.children.get(part);
+                    window.addEventListener('message', event => {
+                        const message = event.data;
+                        switch (message.type) {
+                            case 'updateFiles':
+                                currentFiles = message.files;
+                                updateFileTree(message.files);
+                                break;
                         }
                     });
-                    
-                    return root;
-                }
 
-                function renderTreeItem(item) {
-                    const div = document.createElement('div');
-                    div.className = 'tree-item';
-                    if (item.isDirectory) {
-                        div.classList.add('directory');
+                    function includeAll() {
+                        vscode.postMessage({ type: 'includeAll' });
                     }
-                    
-                    const content = document.createElement('div');
-                    content.className = 'tree-item-content';
-                    
-                    const header = document.createElement('div');
-                    header.className = 'tree-item-header';
-                    
-                    const icon = document.createElement('span');
-                    icon.className = 'tree-item-icon';
-                    icon.textContent = item.isDirectory ? '📁' : '📄';
-                    
-                    const name = document.createElement('span');
-                    name.className = 'tree-item-name';
-                    name.textContent = item.name;
-                    
-                    header.appendChild(icon);
-                    header.appendChild(name);
-                    
-                    if (!item.isDirectory) {
-                        const details = document.createElement('span');
-                        details.className = 'tree-item-details';
-                        details.textContent = item.size;
-                        if (item.modified) {
-                            details.textContent = details.textContent + ' • ' + item.modified;
-                        }
-                        header.appendChild(details);
 
-                        const removeButton = document.createElement('button');
-                        removeButton.className = 'remove-button';
-                        removeButton.textContent = 'Remove';
-                        removeButton.onclick = (e) => {
-                            e.stopPropagation();
-                            vscode.postMessage({
-                                type: 'removeFile',
-                                path: item.path
-                            });
-                        };
-                        content.appendChild(removeButton);
+                    function excludeAll() {
+                        vscode.postMessage({ type: 'excludeAll' });
                     }
-                    
-                    content.appendChild(header);
-                    div.appendChild(content);
-                    
-                    if (item.isDirectory && item.children.size > 0) {
-                        const childrenContainer = document.createElement('div');
-                        childrenContainer.className = 'tree-item-children';
+
+                    function includeStructure() {
+                        vscode.postMessage({ type: 'includeStructure' });
+                    }
+
+                    function buildFileTree(files) {
+                        const root = { children: new Map() };
                         
-                        Array.from(item.children.values())
+                        files.forEach(file => {
+                            const parts = file.path.split('/');
+                            let current = root;
+                            
+                            for (let i = 0; i < parts.length; i++) {
+                                const part = parts[i];
+                                const currentPath = parts.slice(0, i + 1).join('/');
+                                
+                                if (!current.children.has(part)) {
+                                    current.children.set(part, {
+                                        name: part,
+                                        path: currentPath,
+                                        isDirectory: i < parts.length - 1,
+                                        size: i === parts.length - 1 ? file.size : null,
+                                        modified: i === parts.length - 1 ? file.modified : null,
+                                        children: new Map()
+                                    });
+                                }
+                                current = current.children.get(part);
+                            }
+                        });
+                        
+                        return root;
+                    }
+
+                    function renderTreeItem(item) {
+                        const div = document.createElement('div');
+                        div.className = 'tree-item';
+                        if (item.isDirectory) {
+                            div.classList.add('directory');
+                        }
+                        
+                        const content = document.createElement('div');
+                        content.className = 'tree-item-content';
+                        
+                        const header = document.createElement('div');
+                        header.className = 'tree-item-header';
+                        
+                        const icon = document.createElement('span');
+                        icon.className = 'tree-item-icon';
+                        icon.textContent = item.isDirectory ? '📁' : '📄';
+                        
+                        const name = document.createElement('span');
+                        name.className = 'tree-item-name';
+                        name.textContent = item.name;
+                        
+                        header.appendChild(icon);
+                        header.appendChild(name);
+                        
+                        if (!item.isDirectory) {
+                            const details = document.createElement('span');
+                            details.className = 'tree-item-details';
+                            details.textContent = item.size;
+                            if (item.modified) {
+                                details.textContent = details.textContent + ' • ' + item.modified;
+                            }
+                            header.appendChild(details);
+
+                            const removeButton = document.createElement('button');
+                            removeButton.className = 'remove-button';
+                            removeButton.textContent = 'Remove';
+                            removeButton.onclick = (e) => {
+                                e.stopPropagation();
+                                vscode.postMessage({
+                                    type: 'removeFile',
+                                    path: item.path
+                                });
+                            };
+                            content.appendChild(removeButton);
+                        }
+                        
+                        content.appendChild(header);
+                        div.appendChild(content);
+                        
+                        if (item.isDirectory && item.children.size > 0) {
+                            const childrenContainer = document.createElement('div');
+                            childrenContainer.className = 'tree-item-children';
+                            
+                            Array.from(item.children.values())
+                                .sort((a, b) => {
+                                    if (a.isDirectory === b.isDirectory) {
+                                        return a.name.localeCompare(b.name);
+                                    }
+                                    return a.isDirectory ? -1 : 1;
+                                })
+                                .forEach(child => {
+                                    childrenContainer.appendChild(renderTreeItem(child));
+                                });
+                            
+                            div.appendChild(childrenContainer);
+                            
+                            content.onclick = () => {
+                                div.classList.toggle('expanded');
+                            };
+                        } else if (!item.isDirectory) {
+                            content.onclick = () => {
+                                vscode.postMessage({
+                                    type: 'openFile',
+                                    path: item.path
+                                });
+                            };
+                        }
+                        
+                        return div;
+                    }
+
+                    function updateFileTree(files) {
+                        fileTree.innerHTML = '';
+                        fileCount.textContent = files.length + ' files';
+                        
+                        if (files.length === 0) {
+                            const emptyMessage = document.createElement('div');
+                            emptyMessage.className = 'empty-message';
+                            emptyMessage.textContent = 'No files in context';
+                            fileTree.appendChild(emptyMessage);
+                            return;
+                        }
+                        
+                        const tree = buildFileTree(files);
+                        Array.from(tree.children.values())
                             .sort((a, b) => {
                                 if (a.isDirectory === b.isDirectory) {
                                     return a.name.localeCompare(b.name);
                                 }
                                 return a.isDirectory ? -1 : 1;
                             })
-                            .forEach(child => {
-                                childrenContainer.appendChild(renderTreeItem(child));
+                            .forEach(item => {
+                                fileTree.appendChild(renderTreeItem(item));
                             });
-                        
-                        div.appendChild(childrenContainer);
-                        
-                        content.onclick = () => {
-                            div.classList.toggle('expanded');
-                        };
-                    } else if (!item.isDirectory) {
-                        content.onclick = () => {
-                            vscode.postMessage({
-                                type: 'openFile',
-                                path: item.path
-                            });
-                        };
                     }
-                    
-                    return div;
-                }
 
-                function updateFileTree(files) {
-                    fileTree.innerHTML = '';
-                    fileCount.textContent = files.length + ' files';
-                    
-                    if (files.length === 0) {
-                        const emptyMessage = document.createElement('div');
-                        emptyMessage.className = 'empty-message';
-                        emptyMessage.textContent = 'No files in context';
-                        fileTree.appendChild(emptyMessage);
-                        return;
-                    }
-                    
-                    const tree = buildFileTree(files);
-                    Array.from(tree.children.values())
-                        .sort((a, b) => {
-                            if (a.isDirectory === b.isDirectory) {
-                                return a.name.localeCompare(b.name);
+                    function toggleAll() {
+                        isAllExpanded = !isAllExpanded;
+                        document.querySelectorAll('.tree-item.directory').forEach(item => {
+                            if (isAllExpanded) {
+                                item.classList.add('expanded');
+                            } else {
+                                item.classList.remove('expanded');
                             }
-                            return a.isDirectory ? -1 : 1;
-                        })
-                        .forEach(item => {
-                            fileTree.appendChild(renderTreeItem(item));
                         });
-                }
-
-                function toggleAll() {
-                    isAllExpanded = !isAllExpanded;
-                    document.querySelectorAll('.tree-item.directory').forEach(item => {
-                        if (isAllExpanded) {
-                            item.classList.add('expanded');
-                        } else {
-                            item.classList.remove('expanded');
-                        }
-                    });
-                }
-
-                function updateAutoSelectionInfo(selection, enabled) {
-                    if (!enabled || !selection) {
-                        autoSelectionInfo.style.display = 'none';
-                        return;
                     }
-
-                    autoSelectionInfo.style.display = 'block';
-                    document.getElementById('autoSelectionExplanation').textContent = selection.explanation;
-                    
-                    const confidenceEl = document.getElementById('autoSelectionConfidence');
-                    const confidence = Math.round(selection.confidence * 100);
-                    const confidenceColor = confidence > 80 ? '#3fb950' : confidence > 50 ? '#d29922' : '#f85149';
-                    confidenceEl.innerHTML = \`Confidence: <span class="confidence-indicator" style="background-color: \${confidenceColor}">\${confidence}%</span>\`;
-                    
-                    const filesEl = document.getElementById('autoSelectionFiles');
-                    filesEl.innerHTML = selection.selectedFiles
-                        .map(file => \`<li>\${file}</li>\`)
-                        .join('');
-                }
-
-                function updateFileList(files) {
-                    const fileList = document.getElementById('fileList');
-                    fileList.innerHTML = files
-                        .map(file => \`
-                            <div class="file-item">
-                                <span class="file-path">\${file.relativePath}</span>
-                            </div>
-                        \`)
-                        .join('');
-                }
-            </script>
-        </body>
+                </script>
+            </body>
         </html>`;
     }
 
@@ -2008,19 +1894,21 @@ class ContextManager {
 		'.DS_Store',
 		'Thumbs.db'
 	];
-	private autoSelector: AutoContextSelector | null = null;
 
-	constructor(workspaceRoot: string, model?: OpenAI) {
+	constructor(workspaceRoot: string) {
 		this.workspaceRoot = workspaceRoot;
 		this.config = {
 			inclusions: vscode.workspace.getConfiguration('falalo').get('contextInclusions') || [],
 			exclusions: vscode.workspace.getConfiguration('falalo').get('contextExclusions') || this.DEFAULT_EXCLUSIONS,
 			maxFiles: vscode.workspace.getConfiguration('falalo').get('maxContextFiles') || this.DEFAULT_MAX_FILES
 		};
-		if (model) {
-			this.autoSelector = new AutoContextSelector(model, this);
-		}
-		this.updateConfig();
+
+		// Listen for configuration changes
+		vscode.workspace.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('falalo')) {
+				this.updateConfig();
+			}
+		});
 	}
 
 	private async updateConfig() {
@@ -2456,35 +2344,6 @@ class ContextManager {
 		}
 		return filePath;
 	}
-
-	public getWorkspaceRoot(): string {
-		return this.workspaceRoot;
-	}
-
-	public getAutoSelector(): AutoContextSelector | null {
-		return this.autoSelector;
-	}
-
-	public async excludeAllFiles(): Promise<void> {
-		try {
-			// Get all workspace files
-			const files = await vscode.workspace.findFiles('**/*', '**/node_modules/**');
-			
-			// Clear inclusions array
-			this.config.inclusions = [];
-			
-			// Update configuration
-			await vscode.workspace.getConfiguration('falalo').update('contextInclusions', [], vscode.ConfigurationTarget.Global);
-			
-			// Notify listeners
-			await this.notifyContextUpdated();
-			
-			LogManager.getInstance().log('Excluded all files from context', 'info');
-		} catch (error) {
-			LogManager.getInstance().logError(error, 'excludeAllFiles');
-			throw error;
-		}
-	}
 }
 
 // Initialize OpenAI API with error handling
@@ -2717,7 +2576,135 @@ async function openInBrowser(filePath: string): Promise<void> {
 	}
 }
 
+// Update the executeCommands function to handle open commands
+async function executeCommands(commands: CommandExecution | CommandExecution[], workspaceRoot: string): Promise<string[]> {
+	const results: string[] = [];
+	const commandArray = Array.isArray(commands) ? commands : [commands];
 
+	// Get the extension's directory path
+	const extensionPath = vscode.extensions.getExtension('falalo')?.extensionPath || workspaceRoot;
+	console.log('Extension path:', extensionPath);
+
+	for (const cmd of commandArray) {
+		try {
+			// Validate command before execution
+			if (!cmd.command || typeof cmd.command !== 'string') {
+				throw new Error('Invalid command format');
+			}
+
+			// Sanitize and validate the command
+			const sanitizedCommand = cmd.command.trim();
+			if (!sanitizedCommand) {
+				throw new Error('Empty command');
+			}
+
+			// Use the extension path as the default working directory
+			const cwd = cmd.cwd ? path.resolve(extensionPath, cmd.cwd) : extensionPath;
+			
+			// Validate the working directory exists
+			try {
+				await fs.promises.access(cwd, fs.constants.R_OK | fs.constants.X_OK);
+			} catch (error) {
+				throw new Error(`Invalid working directory: ${cwd}`);
+			}
+
+			console.log('Executing command in directory:', cwd);
+			
+			// Create the execution options with improved error handling
+			const options = {
+				cwd,
+				shell: true,
+				env: { 
+					...process.env, 
+					FORCE_COLOR: '1',
+					PYTHONIOENCODING: 'utf-8',
+					LANG: 'en_US.UTF-8'
+				},
+				maxBuffer: 1024 * 1024 * 10 // 10MB buffer
+			};
+
+			// Execute the command
+			const description = cmd.description || sanitizedCommand;
+			console.log(`Executing command: ${description}`);
+			
+			if (cmd.isBackground) {
+				const childProcess = require('child_process').spawn(sanitizedCommand, [], {
+					...options,
+					detached: true,
+					stdio: 'ignore'
+				});
+
+				childProcess.unref();
+				results.push(`Started background process: ${description}`);
+			} else {
+				try {
+					// For synchronous processes with improved error capture
+					const output = require('child_process').execSync(sanitizedCommand, options);
+					const result = output.toString('utf-8').trim();
+					console.log(`Command output: ${result}`);
+					results.push(`✅ ${description}`);
+					
+					if (result) {
+						// Try to parse JSON if the output looks like JSON
+						if (result.trim().startsWith('{') || result.trim().startsWith('[')) {
+							try {
+								const jsonResult = JSON.parse(result);
+								results.push(`Output: ${JSON.stringify(jsonResult, null, 2)}`);
+							} catch (jsonError) {
+								// If JSON parsing fails, just output the raw result
+								results.push(`Output: ${result}`);
+							}
+						} else {
+							results.push(`Output: ${result}`);
+						}
+					}
+				} catch (cmdError: any) {
+					const errorOutput = cmdError.stderr?.toString('utf-8') || cmdError.message;
+					console.error(`Command failed: ${sanitizedCommand}\nError: ${errorOutput}`);
+
+					// Special handling for Python errors
+					if (sanitizedCommand.includes('python') || sanitizedCommand.includes('python3')) {
+						const pythonError = handlePythonError(errorOutput);
+						if (pythonError) {
+							throw new Error(`Python error: ${pythonError}`);
+						}
+					}
+
+					// Check for npm dependency conflict error
+					if (sanitizedCommand.startsWith('npm') && errorOutput.includes('ERESOLVE')) {
+						console.log('Detected npm dependency conflict, retrying with --legacy-peer-deps');
+						results.push(`⚠️ Dependency conflict detected, retrying with --legacy-peer-deps`);
+						
+						try {
+							const modifiedCommand = sanitizedCommand.includes('npm install') 
+								? `${sanitizedCommand} --legacy-peer-deps`
+								: sanitizedCommand;
+							
+							const retryOutput = require('child_process').execSync(modifiedCommand, options);
+							const retryResult = retryOutput.toString('utf-8').trim();
+							results.push(`✅ Command succeeded with --legacy-peer-deps`);
+							
+							if (retryResult) {
+								results.push(`Output: ${retryResult}`);
+							}
+							continue;
+						} catch (retryError: any) {
+							throw new Error(`NPM install failed: ${retryError.message}`);
+						}
+					}
+
+					throw new Error(`Command execution failed: ${errorOutput}`);
+				}
+			}
+		} catch (error: unknown) {
+			console.error(`Error executing command: ${cmd.command}`, error);
+			const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+			throw new Error(`Failed to execute command "${cmd.command}": ${errorMessage}`);
+		}
+	}
+
+	return results;
+}
 
 // Helper function to handle Python-specific errors
 function handlePythonError(errorOutput: string): string | null {
@@ -3779,17 +3766,9 @@ export async function activate(context: vscode.ExtensionContext) {
 		console.error('Failed to initialize extension:', error);
 		vscode.window.showErrorMessage('Failed to initialize extension: ' + (error instanceof Error ? error.message : 'Unknown error'));
 	}
-
-	// Add the "Show Logs" command
-	context.subscriptions.push(
-		vscode.commands.registerCommand('falalo.showLogs', () => {
-			const logsChannel = vscode.window.createOutputChannel('Falalo AI Logs');
-			logsChannel.show();
-		})
-	);
 }
 
-
+// ... rest of the existing code ...
 
 // Update the cleanAIResponse function to handle %%% markers
 function cleanAIResponse(response: string): string {
@@ -3822,22 +3801,13 @@ function validatePath(path: string): boolean {
 }
 
 function sanitizeCommand(command: string): string {
-    // Remove any unmatched quotes
-    let sanitized = command.replace(/(['"])((?:\\\1|.)*?)\1|(['"])(.*)$/g, (match, q1, c1, q2, c2) => {
-        if (q2) {
-            // Unmatched quote - remove it
-            return c2 || '';
-        }
-        return match;
+    // Remove dangerous shell operators
+    const dangerousOperators = [';', '&&', '||', '|', '>', '<', '`', '$', '\\'];
+    let sanitized = command;
+    dangerousOperators.forEach(op => {
+        sanitized = sanitized.split(op).join('');
     });
-
-    // Ensure no process IDs are treated as commands
-    sanitized = sanitized.replace(/^\d+$/, '');
-
-    // Escape special characters
-    sanitized = sanitized.replace(/([&;|<>$`\\"])/g, '\\$1');
-
-    return sanitized;
+    return sanitized.trim();
 }
 
 // Add new interfaces for token usage tracking
@@ -3854,213 +3824,4 @@ interface CommandExecution {
     cwd?: string;
     isBackground?: boolean;
     description?: string;
-}
-
-const outputChannel = vscode.window.createOutputChannel('Falalo AI Logs');
-
-interface AutoContextResult {
-    selectedFiles: string[];
-    explanation: string;
-    confidence: number;
-}
-
-class AutoContextSelector {
-    private model: OpenAI;
-    private contextManager: ContextManager;
-    private enabled: boolean = false;
-    private lastSelection: AutoContextResult | null = null;
-
-    constructor(model: OpenAI, contextManager: ContextManager) {
-        this.model = model;
-        this.contextManager = contextManager;
-    }
-
-    public isEnabled(): boolean {
-        return this.enabled;
-    }
-
-    public toggleEnabled(): boolean {
-        this.enabled = !this.enabled;
-        return this.enabled;
-    }
-
-    public getLastSelection(): AutoContextResult | null {
-        return this.lastSelection;
-    }
-
-    private async getAllWorkspaceFiles(): Promise<string[]> {
-        const workspaceRoot = this.contextManager.getWorkspaceRoot();
-        const files = await vscode.workspace.findFiles('**/*', '**/node_modules/**');
-        return files.map(file => vscode.workspace.asRelativePath(file));
-    }
-
-    public async selectRelevantFiles(userQuery: string): Promise<AutoContextResult> {
-        const workspaceFiles = await this.getAllWorkspaceFiles();
-        const fileStructure = workspaceFiles.join('\n');
-
-        try {
-            const response = await this.model.chat.completions.create({
-                model: 'gpt-4o',
-                messages: [
-                    {
-                        role: 'system',
-                        content: `You are an expert at determining which files would be most relevant for answering coding-related questions.
-                        Given a user query and a list of files in the workspace, select the most relevant files that would help in answering the query.
-                        Consider:
-                        1. Direct file references in the query
-                        2. Related configuration files
-                        3. Files that might contain relevant code
-                        4. Files that provide necessary context
-                        
-                        Respond in JSON format:
-                        {
-                            "selectedFiles": ["file1", "file2"],
-                            "explanation": "Detailed explanation of why these files were selected",
-                            "confidence": 0.9 // 0-1 scale
-                        }`
-                    },
-                    {
-                        role: 'user',
-                        content: `User Query: ${userQuery}\n\nAvailable Files:\n${fileStructure}`
-                    }
-                ],
-                temperature: 0.3,
-                max_tokens: 1000
-            });
-
-            const content = response.choices[0]?.message?.content || '{}';
-            const result: AutoContextResult = JSON.parse(content);
-            this.lastSelection = result;
-
-            // Log the selection
-            LogManager.getInstance().log(
-                `Auto Context Selection:\n${JSON.stringify(result, null, 2)}`,
-                'info'
-            );
-
-            return result;
-        } catch (error) {
-            LogManager.getInstance().logError(error, 'AutoContextSelector.selectRelevantFiles');
-            throw error;
-        }
-    }
-}
-
-async function fixCommandIssues(command: string, error: any): Promise<string | null> {
-    const errorMsg = error.message || error.toString();
-    
-    // Handle specific error cases
-    if (errorMsg.includes('unexpected EOF')) {
-        // Fix unmatched quotes
-        return command.replace(/(['"])((?:\\\1|.)*?)\1|(['"])(.*)$/g, '$2$4');
-    }
-    
-    if (errorMsg.includes('command not found')) {
-        // Check if it's trying to execute a number
-        if (/^\d+$/.test(command.trim())) {
-            return null;
-        }
-        
-        // Try to fix path issues
-        if (!command.startsWith('./') && !command.startsWith('/')) {
-            return `./${command}`;
-        }
-    }
-    
-    return null;
-}
-
-async function executeCommands(commands: CommandExecution | CommandExecution[], workspaceRoot: string): Promise<string[]> {
-    const results: string[] = [];
-    const commandArray = Array.isArray(commands) ? commands : [commands];
-    const { execSync, spawn } = require('child_process');
-
-    for (const cmd of commandArray) {
-        try {
-            if (!cmd.command || typeof cmd.command !== 'string') {
-                throw new Error('Invalid command: Command must be a non-empty string');
-            }
-
-            const sanitizedCommand = sanitizeCommand(cmd.command);
-            if (!sanitizedCommand) {
-                throw new Error('Command was invalid after sanitization');
-            }
-
-            const options = {
-                cwd: cmd.cwd || workspaceRoot,
-                shell: '/bin/zsh', // Explicitly use zsh on macOS
-                encoding: 'utf8' as const,
-                maxBuffer: 10 * 1024 * 1024, // 10MB buffer
-                env: { ...process.env, FORCE_COLOR: '1' } // Preserve colors in output
-            };
-
-            LogManager.getInstance().log(`Executing command: ${sanitizedCommand}`, 'info');
-
-            if (cmd.isBackground) {
-                const childProcess = spawn(sanitizedCommand, [], {
-                    ...options,
-                    detached: true,
-                    stdio: 'ignore'
-                });
-                
-                childProcess.unref();
-                results.push(`Started background process: ${cmd.command}`);
-                
-                // Log any errors from the background process
-                childProcess.on('error', (error: Error) => {
-                    LogManager.getInstance().logError(error, `Background command: ${cmd.command}`);
-                });
-            } else {
-                try {
-                    const output = execSync(sanitizedCommand, options);
-                    const result = output.toString().trim();
-                    
-                    if (result) {
-                        results.push(result);
-                        LogManager.getInstance().log(`Command output: ${result}`, 'info');
-                    }
-                } catch (error: any) {
-                    // Log the original error
-                    LogManager.getInstance().logError(error, `Command failed: ${cmd.command}`);
-                    
-                    // Try to fix the command
-                    const fixedCommand = await fixCommandIssues(sanitizedCommand, error);
-                    if (fixedCommand && fixedCommand !== sanitizedCommand) {
-                        try {
-                            const retryOutput = execSync(fixedCommand, options);
-                            const retryResult = retryOutput.toString().trim();
-                            
-                            if (retryResult) {
-                                results.push(retryResult);
-                                LogManager.getInstance().log(`Fixed command output: ${retryResult}`, 'info');
-                            }
-                        } catch (retryError) {
-                            // If retry also fails, throw the original error
-                            throw error;
-                        }
-                    } else {
-                        throw error;
-                    }
-                }
-            }
-        } catch (error: any) {
-            const errorMessage = error.message || error.toString();
-            LogManager.getInstance().logError(
-                error,
-                `Command execution failed: ${cmd.command}\nError: ${errorMessage}`
-            );
-            
-            // Include stderr in the error if available
-            if (error.stderr) {
-                LogManager.getInstance().logError(
-                    error.stderr.toString(),
-                    'Command stderr output'
-                );
-            }
-            
-            throw new Error(`Command execution failed: ${errorMessage}`);
-        }
-    }
-
-    return results;
 }

@@ -17,13 +17,18 @@ dist/
 Thumbs.db
 
 # Logs
-logs
+logs/*.log
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 .pnpm-debug.log*
+
+# Keep logs directory but ignore contents
+!logs/
+logs/*
+!logs/.gitkeep
 
 # Environment variables
 .env

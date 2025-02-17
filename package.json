@@ -63,38 +63,87 @@
   "activationEvents": [
     "onStartupFinished",
     "workspaceContains:**/.git",
-    "onCommand:falalo.start",
+    "onCommand:falalo.startChat",
+    "onCommand:falalo.reviewCode",
+    "onCommand:falalo.includeInContext",
+    "onCommand:falalo.excludeFromContext",
+    "onCommand:falalo.showContextItems",
+    "onCommand:falalo.organizeFiles",
     "onCommand:falalo.screenshot",
-    "onCommand:falalo.organize"
+    "onCommand:falalo.logs"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "falalo.startChat",
-        "title": "Start AI Chat"
+        "title": "Falalo: Start AI Chat",
+        "category": "Falalo"
       },
       {
         "command": "falalo.reviewCode",
-        "title": "AI Code Review"
+        "title": "Falalo: AI Code Review",
+        "category": "Falalo"
       },
       {
         "command": "falalo.includeInContext",
-        "title": "Include in AI Context"
+        "title": "Falalo: Include in AI Context",
+        "category": "Falalo"
       },
       {
         "command": "falalo.excludeFromContext",
-        "title": "Exclude from AI Context"
+        "title": "Falalo: Exclude from AI Context",
+        "category": "Falalo"
       },
       {
         "command": "falalo.showContextItems",
-        "title": "Show AI Context Items"
+        "title": "Falalo: Show AI Context Items",
+        "category": "Falalo"
       },
       {
         "command": "falalo.organizeFiles",
-        "title": "Organize Files"
+        "title": "Falalo: Organize Files",
+        "category": "Falalo"
+      },
+      {
+        "command": "falalo.screenshot",
+        "title": "Falalo: Take Screenshot",
+        "category": "Falalo"
+      },
+      {
+        "command": "falalo.showLogs",
+        "title": "Show Falalo AI Logs",
+        "icon": "$(output)"
       }
     ],
+    "keybindings": [
+      {
+        "command": "falalo.showLogs",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
+        "when": "editorTextFocus || editorFocus || filesExplorerFocus || terminalFocus"
+      },
+      {
+        "command": "falalo.startChat",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c",
+        "when": "editorTextFocus || editorFocus || filesExplorerFocus || terminalFocus"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "falalo.showLogs"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "falalo.showLogs",
+          "when": "view == falalo.chatView",
+          "group": "navigation"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -115,6 +164,11 @@
           "type": "webview",
           "id": "falalo.contextFilesView",
           "name": "Context Files"
+        },
+        {
+          "type": "webview",
+          "id": "falalo.logsView",
+          "name": "AI Logs"
         }
       ]
     },
@@ -148,9 +202,12 @@
     "vscode:prepublish": "webpack --mode production --config webpack.config.cjs",
     "compile": "webpack --config webpack.config.cjs",
     "watch": "webpack --watch --config webpack.config.cjs",
+    "build": "webpack --mode production --config webpack.config.cjs",
     "pretest": "webpack --config webpack.config.cjs && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "fal": "npm run compile && npm run vscode:prepublish && vsce package && code --install-extension falalo-0.0.1.vsix",
+    "push": "git add . && git commit -m \"Auto-commit: $(date)\" && git push"
   },
   "devDependencies": {
     "@types/node": "18.x",
