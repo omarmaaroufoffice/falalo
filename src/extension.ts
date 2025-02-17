@@ -115,8 +115,8 @@ export async function activate(context: vscode.ExtensionContext) {
                 if (selected) {
                     const uri = vscode.Uri.file(files[items.indexOf(selected)]);
                     const doc = await vscode.workspace.openTextDocument(uri);
-                    await vscode.window.showTextDocument(doc);
-                }
+                            await vscode.window.showTextDocument(doc);
+                        }
             }),
 
             vscode.commands.registerCommand('falalo.showLogs', () => {
@@ -128,14 +128,14 @@ export async function activate(context: vscode.ExtensionContext) {
         logger.log('Falalo AI Assistant activated successfully', { type: 'info' });
         vscode.window.showInformationMessage('Falalo AI Assistant is ready!');
 
-    } catch (error) {
+		} catch (error) {
         logger.logError(error, 'Extension activation');
         vscode.window.showErrorMessage(`Failed to activate Falalo: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        throw error;
-    }
+		throw error;
+	}
 }
 
 export function deactivate() {
     LogManager.getInstance().log('Deactivating Falalo extension...', { type: 'info' });
     LogManager.getInstance().dispose();
-} 
+}

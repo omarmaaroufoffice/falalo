@@ -52,20 +52,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         try {
             this._view = webviewView;
 
-            const screenshotsUri = vscode.Uri.file(path.join(this.extensionUri.fsPath, 'screenshots'));
-            const mediaUri = vscode.Uri.joinPath(this.extensionUri, 'media');
-            const cssUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'css', 'style.css'));
-
-            webviewView.webview.options = {
-                enableScripts: true,
-                enableCommandUris: true,
-                localResourceRoots: [
-                    this.extensionUri,
-                    screenshotsUri,
-                    mediaUri
-                ]
-            };
-
             // Create media directory if it doesn't exist
             const mediaPath = path.join(this.extensionUri.fsPath, 'media', 'css');
             if (!fs.existsSync(mediaPath)) {
@@ -73,11 +59,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 fs.mkdirSync(mediaPath, { recursive: true });
             }
 
-            // Set up webview content
-            this.logger.log('Setting up webview content...', { type: 'info' });
-            webviewView.webview.html = this.getWebviewContent(webviewView.webview);
+            // Configure webview settings
+            webviewView.webview.options = {
+                enableScripts: true,
+                enableCommandUris: true,
+                localResourceRoots: [
+                    this.extensionUri
+                ]
+            };
+
+            // Set up webview content with proper URI handling
+            const styleUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'css', 'style.css'));
+            this.logger.log(`Style URI: ${styleUri}`, { type: 'info' });
             
-            // Set up message listener
+            webviewView.webview.html = this.getWebviewContent(webviewView.webview);
             this.setWebviewMessageListener(webviewView.webview);
             
             this.logger.log('Webview view resolved successfully', { type: 'info' });
@@ -144,67 +139,137 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             });
 
             webview.postMessage({
-                type: 'status',
-                text: 'Processing your request...',
-                status: 'info'
-            });
-
-            // Add user message to UI
-            webview.postMessage({
                 type: 'message',
                 text: message,
                 role: 'user'
             });
 
-            this.logger.log('Sending request to OpenAI...', { type: 'info' });
-            
-            // Create completion with o3-mini model
-            const completion = await this.model.chat.completions.create({
-                model: 'o3-mini',
-                messages: [
-                    {
-                        role: 'system',
-                        content: SYSTEM_PROMPT
-                    },
-                    {
-                        role: 'user',
-                        content: message
-                    }
-                ],
-                reasoning_effort: 'medium',
-                store: true
+            webview.postMessage({
+                type: 'status',
+                text: 'Planning tasks...',
+                status: 'info'
             });
 
-            this.logger.log('Received response from OpenAI', { type: 'info' });
+            // Generate task plan
+            const taskPlan = await evaluateRequest(this.model, message);
+            
+            webview.postMessage({
+                type: 'updateProgress',
+                data: {
+                    steps: taskPlan.steps,
+                    currentStep: taskPlan.currentStep,
+                    totalSteps: taskPlan.totalSteps
+                }
+            });
 
-            const response = completion.choices[0]?.message?.content;
-            if (!response) {
-                throw new Error('No response from AI');
-            }
-
-            // Send response to webview
             webview.postMessage({
                 type: 'message',
-                text: response,
+                text: `I'll help you with that. Here's the plan:\n\n${taskPlan.steps.map((step, index) => `${index + 1}. ${step.description}`).join('\n')}`,
                 role: 'assistant'
             });
 
-            // Update token usage
-            this.updateTokenUsageFromCompletion(completion);
+            // Execute each step
+            for (let i = 0; i < taskPlan.steps.length; i++) {
+                const step = taskPlan.steps[i];
+                step.status = 'in-progress';
+                
+                webview.postMessage({
+                    type: 'updateProgress',
+                    data: {
+                        steps: taskPlan.steps,
+                        currentStep: i,
+                        totalSteps: taskPlan.totalSteps
+                    }
+                });
+
+                webview.postMessage({
+                    type: 'status',
+                    text: `Executing step ${i + 1}: ${step.description}`,
+                    status: 'info'
+                });
+
+                try {
+                    // Get AI response for the current step
+                    const completion = await this.model.chat.completions.create({
+                        model: 'o3-mini',
+                        messages: [
+                            {
+                                role: 'system',
+                                content: `You are an AI assistant helping with coding tasks. Current step (${i + 1}/${taskPlan.totalSteps}): ${step.description}`
+                            },
+                            {
+                                role: 'user',
+                                content: `Please help me complete this step: ${step.description}\n\nProvide the necessary code, file operations, or commands to complete this specific step.`
+                            }
+                        ],
+                        reasoning_effort: 'medium',
+                        store: true
+                    });
+
+                    const stepResponse = completion.choices[0]?.message?.content;
+                    if (!stepResponse) {
+                        throw new Error('No response from AI for step');
+                    }
+
+                    // Update token usage
+                    this.updateTokenUsageFromCompletion(completion);
+
+                    // Execute any commands in the response
+                    await this.detectAndExecuteCommands(stepResponse, webview);
+
+                    // Handle any file operations
+                    const operations = processResponseWithCodeBlocks(stepResponse);
+                    if (operations.length > 0) {
+                        await handleFileOperations(operations);
+                        step.files = operations.map(op => op.path);
+                    }
+
+                    // Show the step response
+                    webview.postMessage({
+                        type: 'message',
+                        text: `Step ${i + 1}: ${stepResponse}`,
+                        role: 'assistant'
+                    });
+
+                    step.status = 'completed';
+                } catch (error) {
+                    step.status = 'failed';
+                    throw error;
+                } finally {
+                    webview.postMessage({
+                        type: 'updateProgress',
+                        data: {
+                            steps: taskPlan.steps,
+                            currentStep: i,
+                            totalSteps: taskPlan.totalSteps
+                        }
+                    });
+                }
+
+                // Small delay between steps
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+
+            // All steps completed
+            webview.postMessage({
+                type: 'status',
+                text: 'All tasks completed successfully!',
+                status: 'success'
+            });
+
+            webview.postMessage({
+                type: 'message',
+                text: '✨ All tasks have been completed successfully! Is there anything else you need help with?',
+                role: 'assistant'
+            });
 
         } catch (error) {
-            this.logger.logError(error, 'Chat error');
+            this.logger.logError(error, 'Task execution error');
             this.handleError(error, webview);
         } finally {
-            // Re-enable input
             webview.postMessage({
                 type: 'enableInput',
                 enabled: true
-            });
-            webview.postMessage({
-                type: 'status',
-                text: '',
-                status: 'info'
             });
         }
     }
@@ -435,86 +500,19 @@ User request: ${userInput}`;
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https:; font-src ${webview.cspSource};">
-                <style>
-                    body {
-                        padding: 0;
-                        margin: 0;
-                        font-family: var(--vscode-font-family);
-                        font-size: var(--vscode-font-size);
-                        line-height: 1.5;
-                        color: var(--vscode-foreground);
-                        background-color: var(--vscode-editor-background);
-                    }
-                    .chat-container {
-                        display: flex;
-                        flex-direction: column;
-                        height: 100vh;
-                        padding: 1rem;
-                    }
-                    .messages {
-                        flex: 1;
-                        overflow-y: auto;
-                        padding: 1rem;
-                        margin-bottom: 1rem;
-                    }
-                    .message {
-                        margin-bottom: 1rem;
-                        padding: 0.5rem 1rem;
-                        border-radius: 4px;
-                    }
-                    .user-message {
-                        background-color: var(--vscode-textBlockQuote-background);
-                        color: var(--vscode-foreground);
-                    }
-                    .assistant-message {
-                        background-color: var(--vscode-editor-inactiveSelectionBackground);
-                        color: var(--vscode-foreground);
-                    }
-                    .error-message {
-                        background-color: var(--vscode-errorForeground);
-                        color: var(--vscode-foreground);
-                        padding: 0.5rem 1rem;
-                        margin: 0.5rem 0;
-                        border-radius: 4px;
-                    }
-                    .status {
-                        padding: 0.5rem;
-                        margin: 0.5rem 0;
-                        border-radius: 4px;
-                        background-color: var(--vscode-textBlockQuote-background);
-                    }
-                    .input-container {
-                        display: flex;
-                        gap: 0.5rem;
-                        padding: 1rem;
-                        background-color: var(--vscode-editor-background);
-                    }
-                    #messageInput {
-                        flex: 1;
-                        padding: 0.5rem;
-                        border: 1px solid var(--vscode-input-border);
-                        background-color: var(--vscode-input-background);
-                        color: var(--vscode-input-foreground);
-                        border-radius: 4px;
-                    }
-                    #sendButton {
-                        padding: 0.5rem 1rem;
-                        background-color: var(--vscode-button-background);
-                        color: var(--vscode-button-foreground);
-                        border: none;
-                        border-radius: 4px;
-                        cursor: pointer;
-                    }
-                    #sendButton:disabled {
-                        opacity: 0.5;
-                        cursor: not-allowed;
-                    }
-                </style>
+                <link rel="stylesheet" type="text/css" href="${styleUri}">
                 <title>AI Chat</title>
             </head>
             <body>
                 <div class="chat-container">
                     <div id="messages" class="messages"></div>
+                    <div id="progress" class="progress-container">
+                        <div class="progress-header">
+                            <span class="progress-title">Task Progress</span>
+                            <span class="progress-stats"></span>
+                        </div>
+                        <div class="progress-steps"></div>
+                    </div>
                     <div id="status" class="status"></div>
                     <div class="input-container">
                         <input type="text" id="messageInput" placeholder="Type your message..." />
@@ -528,9 +526,12 @@ User request: ${userInput}`;
                     const messageInput = document.getElementById('messageInput');
                     const sendButton = document.getElementById('sendButton');
                     const statusDiv = document.getElementById('status');
+                    const progressContainer = document.getElementById('progress');
+                    const progressSteps = progressContainer.querySelector('.progress-steps');
+                    const progressStats = progressContainer.querySelector('.progress-stats');
 
                     // Initialize state
-                    const state = vscode.getState() || { messages: [] };
+                    const state = vscode.getState() || { messages: [], currentTask: null };
                     updateMessages();
 
                     // Handle input events
@@ -563,13 +564,52 @@ User request: ${userInput}`;
                         
                         const messageDiv = document.createElement('div');
                         messageDiv.className = \`message \${role}-message\`;
-                        messageDiv.textContent = text;
+                        
+                        // Handle HTML content
+                        if (text.includes('<') && text.includes('>')) {
+                            messageDiv.innerHTML = text;
+                        } else {
+                            messageDiv.textContent = text;
+                        }
                         
                         messagesContainer.appendChild(messageDiv);
                         messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
                         state.messages.push({ text, role });
                         vscode.setState(state);
+                    }
+
+                    function updateProgress(data) {
+                        if (!data || !data.steps) return;
+                        
+                        state.currentTask = data;
+                        vscode.setState(state);
+                        
+                        progressContainer.style.display = 'block';
+                        progressSteps.innerHTML = '';
+                        progressStats.textContent = \`Step \${data.currentStep + 1} of \${data.totalSteps}\`;
+
+                        data.steps.forEach((step, index) => {
+                            const stepDiv = document.createElement('div');
+                            stepDiv.className = \`progress-step \${step.status}\`;
+                            
+                            const stepNumber = document.createElement('span');
+                            stepNumber.className = 'step-number';
+                            stepNumber.textContent = \`\${index + 1}.\`;
+                            
+                            const stepDesc = document.createElement('span');
+                            stepDesc.className = 'step-description';
+                            stepDesc.textContent = step.description;
+                            
+                            const stepStatus = document.createElement('span');
+                            stepStatus.className = 'step-status';
+                            stepStatus.textContent = step.status;
+                            
+                            stepDiv.appendChild(stepNumber);
+                            stepDiv.appendChild(stepDesc);
+                            stepDiv.appendChild(stepStatus);
+                            progressSteps.appendChild(stepDiv);
+                        });
                     }
 
                     function updateMessages() {
@@ -579,6 +619,10 @@ User request: ${userInput}`;
                                 addMessage(msg.text, msg.role);
                             }
                         });
+                        
+                        if (state.currentTask) {
+                            updateProgress(state.currentTask);
+                        }
                     }
 
                     // Handle messages from extension
@@ -603,6 +647,17 @@ User request: ${userInput}`;
                                 if (message.enabled) {
                                     messageInput.focus();
                                 }
+                                break;
+
+                            case 'updateProgress':
+                                updateProgress(message.data);
+                                break;
+
+                            case 'clearProgress':
+                                progressContainer.style.display = 'none';
+                                progressSteps.innerHTML = '';
+                                state.currentTask = null;
+                                vscode.setState(state);
                                 break;
                         }
                     });

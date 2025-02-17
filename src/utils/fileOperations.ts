@@ -17,14 +17,20 @@ export async function handleFileOperations(operations: FileOperation[]): Promise
         const fullPath = path.join(workspaceRoot, operation.path);
         
         try {
+            // Always ensure the directory exists
+            await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
+
             switch (operation.type) {
                 case 'create':
-                    if (!operation.content) {
-                        throw new Error('Content is required for create operation');
+                    if (operation.content === undefined || operation.content === '') {
+                        // This is a folder creation operation
+                        await fs.promises.mkdir(fullPath, { recursive: true });
+                        logger.log(`Created directory: ${operation.path}`, { type: 'info' });
+                    } else {
+                        // This is a file creation operation
+                        await fs.promises.writeFile(fullPath, operation.content);
+                        logger.log(`Created file: ${operation.path}`, { type: 'info' });
                     }
-                    await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
-                    await fs.promises.writeFile(fullPath, operation.content);
-                    logger.log(`Created file: ${operation.path}`, { type: 'info' });
                     break;
 
                 case 'update':
@@ -52,24 +58,41 @@ export async function handleFileOperations(operations: FileOperation[]): Promise
 
 export function processResponseWithCodeBlocks(response: string): FileOperation[] {
     const operations: FileOperation[] = [];
-    const codeBlockRegex = /```(?:(\w+)\n)?([\s\S]*?)```/g;
+    const codeBlockRegex = /```(?:[\w.]*\n)?File: ([^\n]+)\n([\s\S]*?)```/g;
     let match;
 
     while ((match = codeBlockRegex.exec(response)) !== null) {
-        const [_, language, content] = match;
-        if (language && content) {
-            const filePathMatch = content.match(/^File: (.+)\n/);
-            if (filePathMatch) {
-                const filePath = filePathMatch[1].trim();
-                const fileContent = content.replace(/^File: .+\n/, '').trim();
+        const [_, filePath, content] = match;
+        if (filePath && content) {
+            const trimmedPath = filePath.trim();
+            const trimmedContent = content.trim();
+            
+            if (trimmedPath && trimmedContent) {
                 operations.push({
                     type: 'create',
-                    path: filePath,
-                    content: fileContent
+                    path: trimmedPath,
+                    content: trimmedContent
                 });
             }
         }
     }
+
+    // Also handle folder creation
+    const folderRegex = /\$\$\$ FOLDER_CREATE ([^\n%]+) %%%/g;
+    while ((match = folderRegex.exec(response)) !== null) {
+        const [_, folderPath] = match;
+        if (folderPath) {
+            const trimmedPath = folderPath.trim();
+            if (trimmedPath) {
+                operations.push({
+                    type: 'create',
+                    path: trimmedPath,
+                    content: '' // Empty content for folders
+                });
+            }
+        }
+    }
+
     return operations;
 }
 

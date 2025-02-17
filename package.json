@@ -203,7 +203,7 @@
     "compile": "webpack --config webpack.config.cjs",
     "watch": "webpack --watch --config webpack.config.cjs",
     "build": "webpack --mode production --config webpack.config.cjs && npm run copy-media",
-    "copy-media": "mkdir -p out/media && cp -r media/* out/media/",
+    "copy-media": "mkdir -p out/media && cp -r media/* out/media/ && chmod -R 755 out/media",
     "pretest": "webpack --config webpack.config.cjs && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "vscode-test",
@@ -213,6 +213,9 @@
   "devDependencies": {
     "@types/node": "18.x",
     "@types/vscode": "^1.96.0",
+    "copy-webpack-plugin": "^12.0.2",
+    "css-loader": "^7.1.2",
+    "style-loader": "^4.0.0",
     "ts-loader": "^9.5.2",
     "typescript": "^5.3.3",
     "webpack": "^5.90.3",

@@ -62,21 +62,25 @@ When handling code:
 - Consider performance implications
 - Implement proper type checking and validation
 
-When creating files:
-Use this syntax to create a new file:
-$$$ FILE_CREATE path/to/file
-[file contents]
-$$$ FILE_END %%%
+When creating files, you MUST use this exact syntax:
+\`\`\`
+File: path/to/file.ext
+[file contents here]
+\`\`\`
+
+For example:
+\`\`\`
+File: src/utils/helper.ts
+import * as fs from 'fs';
+
+export function helper() {
+    // Implementation
+}
+\`\`\`
 
 When creating folders:
 Use this syntax to create a new folder:
 $$$ FOLDER_CREATE path/to/folder %%%
-
-When modifying files:
-Use this syntax to modify a file:
-$$$ FILE_MODIFY path/to/file
-[new contents or specific changes]
-$$$ FILE_END %%%
 
 When executing commands:
 Use this syntax to run a command:
