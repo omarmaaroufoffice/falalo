@@ -151,7 +151,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             });
 
             // Generate task plan
-            const taskPlan = await evaluateRequest(this.model, message);
+            const taskPlan = await evaluateRequest(message);
             
             webview.postMessage({
                 type: 'updateProgress',

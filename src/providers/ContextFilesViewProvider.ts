@@ -41,11 +41,33 @@ export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
                     case 'refresh':
                         await this.updateContextFiles();
                         break;
+                    case 'openFile':
+                        if (message.path) {
+                            await this.openFile(message.path);
+                        }
+                        break;
+                    case 'loadAll':
+                        await this.handleLoadAll();
+                        break;
+                    case 'excludeAll':
+                        await this.handleExcludeAll();
+                        break;
                 }
             } catch (error: any) {
                 this.handleError(error);
             }
         });
+    }
+
+    private async openFile(filePath: string) {
+        try {
+            const fullPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, filePath);
+            const uri = vscode.Uri.file(fullPath);
+            const doc = await vscode.workspace.openTextDocument(uri);
+            await vscode.window.showTextDocument(doc);
+        } catch (error) {
+            this.handleError(error);
+        }
     }
 
     private async handleRemoveFile(filePath: string) {
@@ -59,6 +81,56 @@ export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
                     type: 'fileOperation',
                     success: true,
                     details: `Removed from context: ${filePath}`
+                });
+            }
+        } catch (error) {
+            this.handleError(error);
+        }
+    }
+
+    private async handleLoadAll() {
+        try {
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (!workspaceRoot) {
+                throw new Error('No workspace folder found');
+            }
+
+            // Get all files in the workspace
+            const files = await vscode.workspace.findFiles('**/*', '**/node_modules/**');
+            
+            // Add each file to context
+            for (const file of files) {
+                try {
+                    await this.contextManager.addToContext(file.fsPath);
+                } catch (error) {
+                    console.warn(`Failed to add file to context: ${file.fsPath}`, error);
+                }
+            }
+
+            await this.updateContextFiles();
+            
+            if (this._view) {
+                this._view.webview.postMessage({
+                    type: 'status',
+                    text: `Added ${files.length} files to context`,
+                    status: 'success'
+                });
+            }
+        } catch (error) {
+            this.handleError(error);
+        }
+    }
+
+    private async handleExcludeAll() {
+        try {
+            await this.contextManager.clearContext();
+            await this.updateContextFiles();
+            
+            if (this._view) {
+                this._view.webview.postMessage({
+                    type: 'status',
+                    text: 'Cleared all files from context',
+                    status: 'success'
                 });
             }
         } catch (error) {
@@ -92,17 +164,64 @@ export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
                 throw new Error('No workspace folder found');
             }
 
-            const relativePaths = contextFiles.map((file: string) => {
-                return path.relative(workspaceRoot, file);
-            });
+            const fileInfo = await Promise.all(contextFiles.map(async (file: string) => {
+                const relativePath = path.relative(workspaceRoot, file);
+                const stats = await vscode.workspace.fs.stat(vscode.Uri.file(file));
+                const isDirectory = (stats.type & vscode.FileType.Directory) !== 0;
+                const extension = path.extname(file).toLowerCase();
+
+                return {
+                    path: relativePath,
+                    name: path.basename(file),
+                    isDirectory,
+                    extension,
+                    type: this.getFileType(extension, isDirectory)
+                };
+            }));
 
             this._view.webview.postMessage({
                 type: 'updateFiles',
-                files: relativePaths
+                files: fileInfo
             });
         } catch (error) {
             this.handleError(error);
         }
+    }
+
+    private getFileType(extension: string, isDirectory: boolean): string {
+        if (isDirectory) return 'folder';
+
+        const fileTypeMap: { [key: string]: string } = {
+            '.ts': 'typescript',
+            '.js': 'javascript',
+            '.jsx': 'react',
+            '.tsx': 'react',
+            '.json': 'json',
+            '.html': 'html',
+            '.css': 'css',
+            '.scss': 'sass',
+            '.less': 'less',
+            '.py': 'python',
+            '.java': 'java',
+            '.cpp': 'cpp',
+            '.c': 'c',
+            '.h': 'header',
+            '.md': 'markdown',
+            '.txt': 'text',
+            '.xml': 'xml',
+            '.svg': 'svg',
+            '.png': 'image',
+            '.jpg': 'image',
+            '.jpeg': 'image',
+            '.gif': 'image',
+            '.pdf': 'pdf',
+            '.zip': 'archive',
+            '.tar': 'archive',
+            '.gz': 'archive',
+            '.7z': 'archive'
+        };
+
+        return fileTypeMap[extension] || 'file';
     }
 
     private getWebviewContent(webview: vscode.Webview): string {
@@ -114,17 +233,137 @@ export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource};">
     <link rel="stylesheet" href="${styleVscodeUri}">
     <title>Context Files</title>
+    <style>
+        .context-files-container {
+            padding: 10px;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding: 5px;
+            background: var(--vscode-sideBar-background);
+            border-bottom: 1px solid var(--vscode-sideBar-border);
+        }
+        .header h2 {
+            margin: 0;
+            font-size: 14px;
+            font-weight: normal;
+        }
+        .header-buttons {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+        }
+        .action-button {
+            background: none;
+            border: none;
+            color: var(--vscode-button-foreground);
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+        }
+        .action-button:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
+        .refresh-button {
+            background: none;
+            border: none;
+            color: var(--vscode-button-foreground);
+            cursor: pointer;
+            padding: 4px;
+        }
+        .refresh-button:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
+        .file-list {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .file-item {
+            display: flex;
+            align-items: center;
+            padding: 4px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .file-item:hover {
+            background: var(--vscode-list-hoverBackground);
+        }
+        .file-icon {
+            margin-right: 6px;
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .file-name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .remove-button {
+            opacity: 0;
+            background: none;
+            border: none;
+            color: var(--vscode-errorForeground);
+            cursor: pointer;
+            padding: 2px 6px;
+            font-size: 12px;
+            border-radius: 3px;
+        }
+        .file-item:hover .remove-button {
+            opacity: 1;
+        }
+        .remove-button:hover {
+            background: var(--vscode-errorForeground);
+            color: var(--vscode-button-foreground);
+        }
+        .empty-state {
+            padding: 20px;
+            text-align: center;
+            color: var(--vscode-descriptionForeground);
+        }
+        .file-icon.folder::before { content: "📁"; }
+        .file-icon.file::before { content: "📄"; }
+        .file-icon.typescript::before { content: "TS"; }
+        .file-icon.javascript::before { content: "JS"; }
+        .file-icon.react::before { content: "⚛️"; }
+        .file-icon.json::before { content: "{ }"; }
+        .file-icon.html::before { content: "🌐"; }
+        .file-icon.css::before { content: "🎨"; }
+        .file-icon.markdown::before { content: "📝"; }
+        .file-icon.image::before { content: "🖼️"; }
+        .file-icon.archive::before { content: "📦"; }
+    </style>
 </head>
 <body>
     <div class="context-files-container">
         <div class="header">
             <h2>Context Files</h2>
-            <button id="refreshButton" class="icon-button">
-                <span class="codicon codicon-refresh"></span>
-            </button>
+            <div class="header-buttons">
+                <button id="loadAllButton" class="action-button" title="Load all files">
+                    📥 Load All
+                </button>
+                <button id="excludeAllButton" class="action-button" title="Exclude all files">
+                    🗑️ Exclude All
+                </button>
+                <button id="refreshButton" class="refresh-button" title="Refresh">
+                    🔄
+                </button>
+            </div>
         </div>
         <div id="fileList" class="file-list"></div>
     </div>
@@ -132,9 +371,19 @@ export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
         const vscode = acquireVsCodeApi();
         const fileList = document.getElementById('fileList');
         const refreshButton = document.getElementById('refreshButton');
+        const loadAllButton = document.getElementById('loadAllButton');
+        const excludeAllButton = document.getElementById('excludeAllButton');
 
         refreshButton.addEventListener('click', () => {
             vscode.postMessage({ type: 'refresh' });
+        });
+
+        loadAllButton.addEventListener('click', () => {
+            vscode.postMessage({ type: 'loadAll' });
+        });
+
+        excludeAllButton.addEventListener('click', () => {
+            vscode.postMessage({ type: 'excludeAll' });
         });
 
         window.addEventListener('message', event => {
@@ -151,27 +400,53 @@ export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
 
         function updateFileList(files) {
             fileList.innerHTML = '';
+            
+            if (!files || files.length === 0) {
+                const emptyState = document.createElement('div');
+                emptyState.className = 'empty-state';
+                emptyState.textContent = 'No files in context';
+                fileList.appendChild(emptyState);
+                return;
+            }
+
             files.forEach(file => {
                 const fileItem = document.createElement('div');
                 fileItem.className = 'file-item';
                 
+                const fileIcon = document.createElement('span');
+                fileIcon.className = \`file-icon \${file.type}\`;
+                
                 const fileName = document.createElement('span');
                 fileName.className = 'file-name';
-                fileName.textContent = file;
+                fileName.textContent = file.path;
+                fileName.title = file.path;
                 
                 const removeButton = document.createElement('button');
                 removeButton.className = 'remove-button';
-                removeButton.innerHTML = '&times;';
+                removeButton.innerHTML = '✕';
                 removeButton.title = 'Remove from context';
-                removeButton.onclick = () => {
-                    vscode.postMessage({
-                        type: 'removeFile',
-                        path: file
-                    });
-                };
                 
+                fileItem.appendChild(fileIcon);
                 fileItem.appendChild(fileName);
                 fileItem.appendChild(removeButton);
+                
+                fileItem.addEventListener('click', (e) => {
+                    if (e.target !== removeButton) {
+                        vscode.postMessage({
+                            type: 'openFile',
+                            path: file.path
+                        });
+                    }
+                });
+                
+                removeButton.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    vscode.postMessage({
+                        type: 'removeFile',
+                        path: file.path
+                    });
+                });
+                
                 fileList.appendChild(fileItem);
             });
         }
