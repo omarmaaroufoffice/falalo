@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 import { OpenAI } from 'openai';
 import { ChatViewProvider } from './providers/ChatViewProvider';
 import { ContextFilesViewProvider } from './providers/ContextFilesViewProvider';
@@ -8,34 +10,60 @@ import { initializeTaskPlanner } from './services/taskPlanner';
 import { initializeOpenAI } from './services/openai';
 
 export async function activate(context: vscode.ExtensionContext) {
+    const logger = LogManager.getInstance();
+    logger.log('Activating Falalo extension...', { type: 'info' });
+
     try {
+        // Ensure required directories exist
+        const requiredDirs = [
+            path.join(context.extensionUri.fsPath, 'media', 'css'),
+            path.join(context.extensionUri.fsPath, 'screenshots'),
+            path.join(context.extensionUri.fsPath, 'logs')
+        ];
+
+        for (const dir of requiredDirs) {
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+                logger.log(`Created directory: ${dir}`, { type: 'info' });
+            }
+        }
+
         // Initialize OpenAI client
+        logger.log('Initializing OpenAI client...', { type: 'info' });
         const openai = await initializeOpenAI(context);
         if (!openai) {
             throw new Error('Failed to initialize OpenAI client');
         }
 
         // Initialize task planner
+        logger.log('Initializing task planner...', { type: 'info' });
         initializeTaskPlanner(openai);
 
         // Initialize context manager
         const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!workspaceRoot) {
-            throw new Error('No workspace folder found');
+            throw new Error('No workspace folder found. Please open a workspace to use Falalo.');
         }
+        logger.log('Initializing context manager...', { type: 'info' });
         const contextManager = new ContextManager(openai, workspaceRoot);
 
         // Register Chat View Provider
+        logger.log('Registering chat view provider...', { type: 'info' });
         const chatViewProvider = new ChatViewProvider(
             context.extensionUri,
             openai,
             contextManager
         );
         context.subscriptions.push(
-            vscode.window.registerWebviewViewProvider('falalo.chatView', chatViewProvider)
+            vscode.window.registerWebviewViewProvider('falalo.chatView', chatViewProvider, {
+                webviewOptions: {
+                    retainContextWhenHidden: true
+                }
+            })
         );
 
         // Register Context Files View Provider
+        logger.log('Registering context files view provider...', { type: 'info' });
         const contextFilesViewProvider = new ContextFilesViewProvider(
             context.extensionUri,
             contextManager
@@ -45,8 +73,10 @@ export async function activate(context: vscode.ExtensionContext) {
         );
 
         // Register commands
+        logger.log('Registering commands...', { type: 'info' });
         context.subscriptions.push(
             vscode.commands.registerCommand('falalo.startChat', () => {
+                vscode.commands.executeCommand('workbench.view.extension.falalo-sidebar');
                 vscode.commands.executeCommand('falalo.chatView.focus');
             }),
 
@@ -95,17 +125,17 @@ export async function activate(context: vscode.ExtensionContext) {
         );
 
         // Log successful activation
-        LogManager.getInstance().log('Falalo AI Assistant activated', { type: 'info' });
+        logger.log('Falalo AI Assistant activated successfully', { type: 'info' });
         vscode.window.showInformationMessage('Falalo AI Assistant is ready!');
 
     } catch (error) {
-        LogManager.getInstance().logError(error, 'Extension activation');
+        logger.logError(error, 'Extension activation');
         vscode.window.showErrorMessage(`Failed to activate Falalo: ${error instanceof Error ? error.message : 'Unknown error'}`);
         throw error;
     }
 }
 
 export function deactivate() {
-    // Clean up resources
+    LogManager.getInstance().log('Deactivating Falalo extension...', { type: 'info' });
     LogManager.getInstance().dispose();
 } 

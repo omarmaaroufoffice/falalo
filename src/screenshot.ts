@@ -273,8 +273,6 @@ export class ScreenshotManager {
                         INCLUDE extensive comments and documentation.
                         SPECIFY full file paths for all changes.` }
                 ],
-                temperature: 0.7,
-                max_tokens: 4000
             });
 
             const analysis = response.choices[0]?.message?.content || '';

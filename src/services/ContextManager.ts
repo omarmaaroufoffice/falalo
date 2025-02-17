@@ -114,7 +114,7 @@ export class ContextManager {
 
         const contextContent = fileContents.join('\n---\n');
         const completion = await this.model.chat.completions.create({
-            model: 'gpt-4o-mini',
+            model: 'o3-mini',
             messages: [
                 {
                     role: 'system',
@@ -125,8 +125,9 @@ export class ContextManager {
                     content: contextContent
                 }
             ],
-            temperature: 0.3,
-            max_tokens: 500
+            reasoning_effort: 'high',
+            max_completion_tokens: 100000,
+            store: true
         });
 
         return completion.choices[0]?.message?.content || 'Failed to generate context summary.';
@@ -151,7 +152,7 @@ export class ContextManager {
 
         const contextContent = fileContents.join('\n---\n');
         const completion = await this.model.chat.completions.create({
-            model: 'gpt-4o-mini',
+            model: 'o3-mini',
             messages: [
                 {
                     role: 'system',
@@ -162,8 +163,9 @@ export class ContextManager {
                     content: `Context:\n${contextContent}\n\nQuery: ${query}`
                 }
             ],
-            temperature: 0.3,
-            max_tokens: 1000
+            reasoning_effort: 'high',
+            max_completion_tokens: 100000,
+            store: true
         });
 
         return completion.choices[0]?.message?.content || 'Failed to analyze context.';

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 export interface TaskStep {
+    id: number;
     description: string;
     status: 'pending' | 'in-progress' | 'completed' | 'failed';
     files: string[];
@@ -13,6 +14,7 @@ export interface TaskPlan {
     steps: TaskStep[];
     currentStep: number;
     totalSteps: number;
+    request: string;
     originalRequest: string;
     description: string;
     estimatedTime: string;

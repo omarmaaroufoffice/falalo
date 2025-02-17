@@ -8,6 +8,8 @@ vsc-extension-quickstart.md
 **/.eslintrc.json
 **/*.map
 **/*.ts
+!media/**
+!out/media/**
 !node_modules/agentkeepalive/**
 !node_modules/form-data/**
 !node_modules/abort-controller/**

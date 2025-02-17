@@ -30,6 +30,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         input: 0.0001,
         output: 0.0002
     };
+    private logger: LogManager;
 
     constructor(
         private readonly extensionUri: vscode.Uri,
@@ -37,6 +38,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         private readonly contextManager: ContextManager
     ) {
         this.screenshotManager = new ScreenshotManager(extensionUri.fsPath);
+        this.logger = LogManager.getInstance();
+        this.logger.log('ChatViewProvider initialized', { type: 'info' });
     }
 
     public resolveWebviewView(
@@ -44,30 +47,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         context: vscode.WebviewViewResolveContext,
         _token: vscode.CancellationToken,
     ) {
-        this._view = webviewView;
+        this.logger.log('Resolving webview view...', { type: 'info' });
+        
+        try {
+            this._view = webviewView;
 
-        const screenshotsUri = vscode.Uri.file(path.join(this.extensionUri.fsPath, 'screenshots'));
-        const mediaUri = vscode.Uri.joinPath(this.extensionUri, 'media');
-        const cssUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'css', 'style.css'));
+            const screenshotsUri = vscode.Uri.file(path.join(this.extensionUri.fsPath, 'screenshots'));
+            const mediaUri = vscode.Uri.joinPath(this.extensionUri, 'media');
+            const cssUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'css', 'style.css'));
 
-        webviewView.webview.options = {
-            enableScripts: true,
-            enableCommandUris: true,
-            localResourceRoots: [
-                this.extensionUri,
-                screenshotsUri,
-                mediaUri
-            ]
-        };
+            webviewView.webview.options = {
+                enableScripts: true,
+                enableCommandUris: true,
+                localResourceRoots: [
+                    this.extensionUri,
+                    screenshotsUri,
+                    mediaUri
+                ]
+            };
 
-        // Create media directory if it doesn't exist
-        const mediaPath = path.join(this.extensionUri.fsPath, 'media', 'css');
-        if (!fs.existsSync(mediaPath)) {
-            fs.mkdirSync(mediaPath, { recursive: true });
+            // Create media directory if it doesn't exist
+            const mediaPath = path.join(this.extensionUri.fsPath, 'media', 'css');
+            if (!fs.existsSync(mediaPath)) {
+                this.logger.log(`Creating CSS directory: ${mediaPath}`, { type: 'info' });
+                fs.mkdirSync(mediaPath, { recursive: true });
+            }
+
+            // Set up webview content
+            this.logger.log('Setting up webview content...', { type: 'info' });
+            webviewView.webview.html = this.getWebviewContent(webviewView.webview);
+            
+            // Set up message listener
+            this.setWebviewMessageListener(webviewView.webview);
+            
+            this.logger.log('Webview view resolved successfully', { type: 'info' });
+        } catch (error) {
+            this.logger.logError(error, 'Failed to resolve webview view');
+            throw error;
         }
-
-        webviewView.webview.html = this.getWebviewContent(webviewView.webview);
-        this.setWebviewMessageListener(webviewView.webview);
     }
 
     private updateTokenUsageFromCompletion(completion: any) {
@@ -91,7 +108,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     private setWebviewMessageListener(webview: vscode.Webview) {
+        this.logger.log('Setting up webview message listener...', { type: 'info' });
+        
         webview.onDidReceiveMessage(async message => {
+            this.logger.log(`Received message from webview: ${JSON.stringify(message)}`, { type: 'info' });
+            
             try {
                 switch (message.type) {
                     case 'userMessage':
@@ -102,43 +123,89 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                             await this.handleExcludeFile(message.path, webview);
                         }
                         break;
+                    default:
+                        this.logger.log(`Unknown message type: ${message.type}`, { type: 'error' });
                 }
-            } catch (error: any) {
+            } catch (error) {
+                this.logger.logError(error, 'Message handler error');
                 this.handleError(error, webview);
             }
         });
     }
 
     private async handleUserMessage(message: string, webview: vscode.Webview) {
+        this.logger.log(`Processing user message: ${message}`, { type: 'info' });
+        
         try {
+            // Disable input while processing
+            webview.postMessage({
+                type: 'enableInput',
+                enabled: false
+            });
+
             webview.postMessage({
                 type: 'status',
-                text: 'Analyzing your request...',
+                text: 'Processing your request...',
                 status: 'info'
             });
 
-            const summary = await this.generateCodeSummary(message);
-            const summaryHtml = this.formatSummaryForDisplay(summary);
-            webview.postMessage({ 
-                type: 'aiResponse', 
-                text: summaryHtml,
-                isAnalysis: true
-            });
-
-            const taskPlan = await evaluateRequest(message);
+            // Add user message to UI
             webview.postMessage({
-                type: 'updateProgress',
-                data: {
-                    currentStep: taskPlan.currentStep,
-                    totalSteps: taskPlan.totalSteps,
-                    steps: taskPlan.steps
-                }
+                type: 'message',
+                text: message,
+                role: 'user'
             });
 
-            await this.executeTaskPlan(taskPlan, webview);
+            this.logger.log('Sending request to OpenAI...', { type: 'info' });
+            
+            // Create completion with o3-mini model
+            const completion = await this.model.chat.completions.create({
+                model: 'o3-mini',
+                messages: [
+                    {
+                        role: 'system',
+                        content: SYSTEM_PROMPT
+                    },
+                    {
+                        role: 'user',
+                        content: message
+                    }
+                ],
+                reasoning_effort: 'medium',
+                store: true
+            });
+
+            this.logger.log('Received response from OpenAI', { type: 'info' });
+
+            const response = completion.choices[0]?.message?.content;
+            if (!response) {
+                throw new Error('No response from AI');
+            }
+
+            // Send response to webview
+            webview.postMessage({
+                type: 'message',
+                text: response,
+                role: 'assistant'
+            });
+
+            // Update token usage
+            this.updateTokenUsageFromCompletion(completion);
 
         } catch (error) {
+            this.logger.logError(error, 'Chat error');
             this.handleError(error, webview);
+        } finally {
+            // Re-enable input
+            webview.postMessage({
+                type: 'enableInput',
+                enabled: true
+            });
+            webview.postMessage({
+                type: 'status',
+                text: '',
+                status: 'info'
+            });
         }
     }
 
@@ -164,7 +231,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     private handleError(error: any, webview: vscode.Webview) {
-        console.error('Detailed AI Error:', error);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+        this.logger.logError(error, 'Chat error');
         
         webview.postMessage({
             type: 'status',
@@ -172,19 +240,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             status: 'error'
         });
         
-        const errorMessage = error?.message || 'Unknown error occurred';
-        vscode.window.showErrorMessage(`Error: ${errorMessage}`);
-        
         webview.postMessage({
-            type: 'aiResponse',
-            text: `<div class="error-message">Error: ${errorMessage}</div>`,
-            isError: true
+            type: 'message',
+            text: `Error: ${errorMessage}`,
+            role: 'error'
         });
-
+        
         webview.postMessage({
             type: 'enableInput',
             enabled: true
         });
+        
+        vscode.window.showErrorMessage(`Chat error: ${errorMessage}`);
     }
 
     private async executeTaskPlan(taskPlan: any, webview: vscode.Webview) {
@@ -211,8 +278,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             
             const completion = await this.model.chat.completions.create({
                 model: "o3-mini",
-                reasoning_effort: "medium",
-                max_completion_tokens: 100000,
                 messages: [
                     {
                         role: "system",
@@ -223,6 +288,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         content: `Execute this step: ${currentStep.description}\n\nProvide the necessary code, file operations, or commands to complete this specific step.`
                     }
                 ],
+                reasoning_effort: "medium",
                 store: true
             });
 
@@ -294,13 +360,13 @@ ${workspaceContext}
 User request: ${userInput}`;
 
             const response = await this.model.chat.completions.create({
-                model: 'gpt-4o-mini',
+                model: 'o3-mini',
                 messages: [
                     { role: 'system', content: 'You are an expert code analyst providing detailed summaries and implementation strategies.' },
                     { role: 'user', content: prompt }
                 ],
-                temperature: 0.3,
-                max_tokens: 1000
+                reasoning_effort: 'medium',
+                store: true
             });
 
             const summaryText = response.choices[0]?.message?.content || '';
@@ -357,178 +423,205 @@ User request: ${userInput}`;
     }
 
     private getWebviewContent(webview: vscode.Webview): string {
-        const styleVscodeUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'css', 'style.css'));
-        const nonce = this.getNonce();
+        this.logger.log('Generating webview content...', { type: 'info' });
+        
+        try {
+            const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'css', 'style.css'));
+            const nonce = this.getNonce();
 
-        return `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https:;">
-    <link rel="stylesheet" href="${styleVscodeUri}">
-    <title>Falalo AI Chat</title>
-</head>
-<body>
-    <div class="main-container">
-        <div class="chat-container">
-            <div class="messages" id="messages"></div>
-            <div class="input-container">
-                <input type="text" id="messageInput" placeholder="Type your message..." />
-                <button id="sendButton">Send</button>
-            </div>
-        </div>
-        <div class="progress-container" id="progressContainer"></div>
-    </div>
-    <script nonce="${nonce}">
-        const vscode = acquireVsCodeApi();
-        const messagesContainer = document.getElementById('messages');
-        const messageInput = document.getElementById('messageInput');
-        const sendButton = document.getElementById('sendButton');
-        const progressContainer = document.getElementById('progressContainer');
-
-        // Initialize message history
-        const state = vscode.getState() || { messages: [] };
-        updateMessages();
-
-        // Handle input events
-        messageInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
-
-        sendButton.addEventListener('click', () => {
-            sendMessage();
-        });
-
-        function sendMessage() {
-            const message = messageInput.value.trim();
-            if (message) {
-                // Disable input while processing
-                messageInput.disabled = true;
-                sendButton.disabled = true;
-
-                // Add user message to UI
-                addMessage(message, 'user');
-
-                // Send to extension
-                vscode.postMessage({
-                    type: 'userMessage',
-                    text: message
-                });
-
-                // Clear input
-                messageInput.value = '';
-            }
-        }
-
-        function addMessage(text, type = 'ai', options = {}) {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = \`message \${type}-message\`;
-            
-            if (options.isAnalysis) {
-                messageDiv.innerHTML = text;
-            } else {
-                messageDiv.textContent = text;
-            }
-            
-            messagesContainer.appendChild(messageDiv);
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-
-            // Update state
-            state.messages.push({ text, type, options });
-            vscode.setState(state);
-        }
-
-        function updateMessages() {
-            messagesContainer.innerHTML = '';
-            state.messages.forEach(msg => {
-                addMessage(msg.text, msg.type, msg.options);
-            });
-        }
-
-        function updateProgress(data) {
-            progressContainer.innerHTML = \`
-                <div class="task-progress">
-                    <div class="progress-header">
-                        <span class="progress-title">Task Progress</span>
-                        <span class="progress-stats">\${data.currentStep + 1}/\${data.totalSteps}</span>
-                    </div>
-                    <div class="steps-list">
-                        \${data.steps.map((step, index) => \`
-                            <div class="step \${step.status}">
-                                <div class="step-number">\${index + 1}</div>
-                                <div class="step-content">
-                                    <div class="step-description">\${step.description}</div>
-                                    \${step.files ? \`
-                                        <div class="file-operations">
-                                            \${step.files.map(file => \`
-                                                <div class="file-operation">
-                                                    <span class="operation-icon">📄</span>
-                                                    <span class="operation-details">\${file}</span>
-                                                </div>
-                                            \`).join('')}
-                                        </div>
-                                    \` : ''}
-                                </div>
-                            </div>
-                        \`).join('')}
+            const html = `<!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https:; font-src ${webview.cspSource};">
+                <style>
+                    body {
+                        padding: 0;
+                        margin: 0;
+                        font-family: var(--vscode-font-family);
+                        font-size: var(--vscode-font-size);
+                        line-height: 1.5;
+                        color: var(--vscode-foreground);
+                        background-color: var(--vscode-editor-background);
+                    }
+                    .chat-container {
+                        display: flex;
+                        flex-direction: column;
+                        height: 100vh;
+                        padding: 1rem;
+                    }
+                    .messages {
+                        flex: 1;
+                        overflow-y: auto;
+                        padding: 1rem;
+                        margin-bottom: 1rem;
+                    }
+                    .message {
+                        margin-bottom: 1rem;
+                        padding: 0.5rem 1rem;
+                        border-radius: 4px;
+                    }
+                    .user-message {
+                        background-color: var(--vscode-textBlockQuote-background);
+                        color: var(--vscode-foreground);
+                    }
+                    .assistant-message {
+                        background-color: var(--vscode-editor-inactiveSelectionBackground);
+                        color: var(--vscode-foreground);
+                    }
+                    .error-message {
+                        background-color: var(--vscode-errorForeground);
+                        color: var(--vscode-foreground);
+                        padding: 0.5rem 1rem;
+                        margin: 0.5rem 0;
+                        border-radius: 4px;
+                    }
+                    .status {
+                        padding: 0.5rem;
+                        margin: 0.5rem 0;
+                        border-radius: 4px;
+                        background-color: var(--vscode-textBlockQuote-background);
+                    }
+                    .input-container {
+                        display: flex;
+                        gap: 0.5rem;
+                        padding: 1rem;
+                        background-color: var(--vscode-editor-background);
+                    }
+                    #messageInput {
+                        flex: 1;
+                        padding: 0.5rem;
+                        border: 1px solid var(--vscode-input-border);
+                        background-color: var(--vscode-input-background);
+                        color: var(--vscode-input-foreground);
+                        border-radius: 4px;
+                    }
+                    #sendButton {
+                        padding: 0.5rem 1rem;
+                        background-color: var(--vscode-button-background);
+                        color: var(--vscode-button-foreground);
+                        border: none;
+                        border-radius: 4px;
+                        cursor: pointer;
+                    }
+                    #sendButton:disabled {
+                        opacity: 0.5;
+                        cursor: not-allowed;
+                    }
+                </style>
+                <title>AI Chat</title>
+            </head>
+            <body>
+                <div class="chat-container">
+                    <div id="messages" class="messages"></div>
+                    <div id="status" class="status"></div>
+                    <div class="input-container">
+                        <input type="text" id="messageInput" placeholder="Type your message..." />
+                        <button id="sendButton">Send</button>
                     </div>
                 </div>
-            \`;
-        }
 
-        // Handle messages from extension
-        window.addEventListener('message', event => {
-            const message = event.data;
-            switch (message.type) {
-                case 'aiResponse':
-                    addMessage(message.text, 'ai', {
-                        isAnalysis: message.isAnalysis,
-                        hasCode: message.hasCode,
-                        isComplete: message.isComplete
+                <script nonce="${nonce}">
+                    const vscode = acquireVsCodeApi();
+                    const messagesContainer = document.getElementById('messages');
+                    const messageInput = document.getElementById('messageInput');
+                    const sendButton = document.getElementById('sendButton');
+                    const statusDiv = document.getElementById('status');
+
+                    // Initialize state
+                    const state = vscode.getState() || { messages: [] };
+                    updateMessages();
+
+                    // Handle input events
+                    messageInput.addEventListener('keypress', (e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            sendMessage();
+                        }
                     });
-                    break;
-                    
-                case 'status':
-                    const statusDiv = document.createElement('div');
-                    statusDiv.className = \`status-container \${message.status}\`;
-                    statusDiv.innerHTML = \`
-                        <p class="status-message">\${message.text}</p>
-                        <div class="progress-indicator"></div>
-                    \`;
-                    messagesContainer.appendChild(statusDiv);
-                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                    break;
-                    
-                case 'updateProgress':
-                    updateProgress(message.data);
-                    break;
-                    
-                case 'enableInput':
-                    messageInput.disabled = false;
-                    sendButton.disabled = false;
-                    messageInput.focus();
-                    break;
-                    
-                case 'error':
-                    addMessage(\`Error: \${message.message}\`, 'error');
-                    messageInput.disabled = false;
-                    sendButton.disabled = false;
-                    break;
-            }
-        });
 
-        // Initial focus
-        messageInput.focus();
-    </script>
-</body>
-</html>`;
+                    sendButton.addEventListener('click', sendMessage);
+
+                    function sendMessage() {
+                        const message = messageInput.value.trim();
+                        if (message) {
+                            messageInput.disabled = true;
+                            sendButton.disabled = true;
+
+                            vscode.postMessage({
+                                type: 'userMessage',
+                                text: message
+                            });
+
+                            messageInput.value = '';
+                        }
+                    }
+
+                    function addMessage(text, role) {
+                        if (!text || !role) return;
+                        
+                        const messageDiv = document.createElement('div');
+                        messageDiv.className = \`message \${role}-message\`;
+                        messageDiv.textContent = text;
+                        
+                        messagesContainer.appendChild(messageDiv);
+                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+                        state.messages.push({ text, role });
+                        vscode.setState(state);
+                    }
+
+                    function updateMessages() {
+                        messagesContainer.innerHTML = '';
+                        state.messages.forEach(msg => {
+                            if (msg && msg.text && msg.role) {
+                                addMessage(msg.text, msg.role);
+                            }
+                        });
+                    }
+
+                    // Handle messages from extension
+                    window.addEventListener('message', event => {
+                        const message = event.data;
+                        
+                        switch (message.type) {
+                            case 'message':
+                                if (message.text && message.role) {
+                                    addMessage(message.text, message.role);
+                                }
+                                break;
+                                
+                            case 'status':
+                                statusDiv.textContent = message.text || '';
+                                statusDiv.className = \`status \${message.status || ''}\`;
+                                break;
+                                
+                            case 'enableInput':
+                                messageInput.disabled = !message.enabled;
+                                sendButton.disabled = !message.enabled;
+                                if (message.enabled) {
+                                    messageInput.focus();
+                                }
+                                break;
+                        }
+                    });
+
+                    // Initial focus
+                    messageInput.focus();
+                </script>
+            </body>
+            </html>`;
+
+            this.logger.log('Webview content generated successfully', { type: 'info' });
+            return html;
+        } catch (error) {
+            this.logger.logError(error, 'Failed to generate webview content');
+            throw error;
+        }
     }
 
-    private getNonce() {
+    private getNonce(): string {
         let text = '';
         const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
         for (let i = 0; i < 32; i++) {

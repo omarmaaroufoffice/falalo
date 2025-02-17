@@ -1,21 +1,57 @@
 import { OpenAI } from 'openai';
+import { LogManager } from '../logManager';
 import { TaskPlan, TaskStep } from '../interfaces/types';
 import { TASK_PLANNING_PROMPT } from '../constants/prompts';
 
 let model: OpenAI | null = null;
 
-export function initializeTaskPlanner(openai: OpenAI) {
+export async function initializeTaskPlanner(openai: OpenAI): Promise<void> {
     model = openai;
+
+    const logger = LogManager.getInstance();
+    
+    try {
+        logger.log('Testing task planner...', { type: 'info' });
+        
+        const testResponse = await openai.chat.completions.create({
+            model: 'o3-mini',
+            messages: [
+                {
+                    role: 'system',
+                    content: 'You are a task planning assistant.'
+                },
+                {
+                    role: 'user',
+                    content: 'Test task planning.'
+                }
+            ],
+            reasoning_effort: 'medium',
+            store: true
+        });
+
+        if (!testResponse.choices || testResponse.choices.length === 0) {
+            throw new Error('Task planner initialization failed');
+        }
+
+        logger.log('Task planner initialized successfully', { type: 'info' });
+    } catch (error) {
+        logger.logError(error, 'Task planner initialization');
+        throw error;
+    }
 }
 
-export async function evaluateRequest(request: string): Promise<TaskPlan> {
-    if (!model) {
-        throw new Error('Task planner not initialized');
-    }
-
+export async function evaluateRequest(model: OpenAI, request: string): Promise<TaskPlan> {
+    const logger = LogManager.getInstance();
+    
     try {
+        if (!request || typeof request !== 'string' || request.trim().length === 0) {
+            throw new Error('Invalid request: Request cannot be empty');
+        }
+
+        logger.log('Evaluating request with task planner...', { type: 'info' });
+        
         const completion = await model.chat.completions.create({
-            model: 'gpt-4o-mini',
+            model: 'o3-mini',
             messages: [
                 {
                     role: 'system',
@@ -23,28 +59,46 @@ export async function evaluateRequest(request: string): Promise<TaskPlan> {
                 },
                 {
                     role: 'user',
-                    content: request
+                    content: `Please analyze this request and break it down into steps: ${request}`
                 }
             ],
-            temperature: 0.3,
-            max_tokens: 1000
+            reasoning_effort: 'medium',
+            store: true
         });
 
         const response = completion.choices[0]?.message?.content;
         if (!response) {
-            throw new Error('Empty response from AI');
+            throw new Error('No response from task planner');
         }
 
-        try {
-            const parsedResponse = JSON.parse(response);
-            return validateAndNormalizeTaskPlan(parsedResponse, request);
-        } catch (error) {
-            console.error('Error parsing AI response:', error);
-            console.debug('Raw response:', response);
-            throw new Error('Invalid task plan format');
+        const steps = response.split('\n')
+            .filter(line => line.trim() && !line.startsWith('```') && !line.startsWith('Here') && !line.startsWith('I will'))
+            .map((line, index) => ({
+                id: index + 1,
+                description: line.trim(),
+                status: 'pending' as const,
+                files: [],
+                dependencies: []
+            }));
+
+        if (steps.length === 0) {
+            throw new Error('No valid steps could be extracted from the response');
         }
+
+        const taskPlan: TaskPlan = {
+            steps,
+            currentStep: 0,
+            totalSteps: steps.length,
+            request,
+            originalRequest: request,
+            description: `Task plan for: ${request}`,
+            estimatedTime: `${Math.ceil(steps.length * 5)} minutes`
+        };
+
+        logger.log(`Created task plan with ${steps.length} steps`, { type: 'info' });
+        return taskPlan;
     } catch (error) {
-        console.error('Error evaluating request:', error);
+        logger.logError(error, 'Task planning');
         throw error;
     }
 }
@@ -68,14 +122,14 @@ function validateAndNormalizeTaskPlan(plan: any, originalRequest: string): TaskP
         }
 
         return {
+            id: index + 1,
             description: step.description,
             status: 'pending',
             files: [],
-            dependencies: step.dependencies || []
+            dependencies: Array.isArray(step.dependencies) ? step.dependencies.map(Number) : []
         };
     });
 
-    // Extract or generate description and estimatedTime
     const description = typeof plan.description === 'string' && plan.description
         ? plan.description
         : `Task plan for: ${originalRequest}`;
@@ -88,6 +142,7 @@ function validateAndNormalizeTaskPlan(plan: any, originalRequest: string): TaskP
         steps: normalizedSteps,
         currentStep: 0,
         totalSteps: normalizedSteps.length,
+        request: originalRequest,
         originalRequest,
         description,
         estimatedTime
@@ -104,7 +159,6 @@ export async function updateTaskProgress(plan: TaskPlan, stepIndex: number, stat
     if (status === 'completed') {
         plan.currentStep = Math.min(plan.currentStep + 1, plan.totalSteps);
     } else if (status === 'failed') {
-        // Optionally handle failed steps differently
         console.error(`Step ${stepIndex + 1} failed: ${plan.steps[stepIndex].description}`);
     }
 }
@@ -117,9 +171,11 @@ export function getNextStep(plan: TaskPlan): TaskStep | null {
     const nextStep = plan.steps[plan.currentStep];
     
     // Check if all dependencies are completed
-    const unmetDependencies = nextStep.dependencies.filter(depIndex => {
-        return depIndex < plan.steps.length && plan.steps[depIndex].status !== 'completed';
-    });
+    const unmetDependencies = nextStep.dependencies
+        .map(Number)
+        .filter(depIndex => {
+            return depIndex >= 0 && depIndex < plan.steps.length && plan.steps[depIndex].status !== 'completed';
+        });
 
     if (unmetDependencies.length > 0) {
         console.warn('Dependencies not met for step:', nextStep.description);

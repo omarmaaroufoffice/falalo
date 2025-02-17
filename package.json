@@ -202,11 +202,12 @@
     "vscode:prepublish": "webpack --mode production --config webpack.config.cjs",
     "compile": "webpack --config webpack.config.cjs",
     "watch": "webpack --watch --config webpack.config.cjs",
-    "build": "webpack --mode production --config webpack.config.cjs",
+    "build": "webpack --mode production --config webpack.config.cjs && npm run copy-media",
+    "copy-media": "mkdir -p out/media && cp -r media/* out/media/",
     "pretest": "webpack --config webpack.config.cjs && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "vscode-test",
-    "fal": "npm run compile && npm run vscode:prepublish && vsce package && code --install-extension falalo-0.0.1.vsix",
+    "fal": "npm run build && vsce package && code --install-extension falalo-0.0.1.vsix",
     "push": "git add . && git commit -m \"Auto-commit: $(date)\" && git push"
   },
   "devDependencies": {
