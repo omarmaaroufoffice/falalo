@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { LogOptions } from './interfaces/types';
 
 export class LogManager {
     private static instance: LogManager;
@@ -81,16 +82,17 @@ export class LogManager {
         return LogManager.instance;
     }
 
-    public log(message: string, type: 'info' | 'error' | 'ai' = 'info'): void {
+    public log(message: string, options: LogOptions = {}): void {
         const timestamp = new Date().toISOString();
-        const logMessage = `[${timestamp}] ${message}`;
+        const contextMessage = options.context ? ` [${options.context}]` : '';
+        const logMessage = `[${timestamp}]${contextMessage} ${message}`;
 
         try {
             // Always show in output channel
             this.logChannel.appendLine(logMessage);
 
             // Update status bar and log to file based on type
-            if (type === 'error') {
+            if (options.type === 'error') {
                 this.updateStatusBarItem('error');
                 fs.appendFileSync(this.errorLogFile, logMessage + '\n');
                 console.error(logMessage);
@@ -101,7 +103,7 @@ export class LogManager {
                         this.show();
                     }
                 });
-            } else if (type === 'ai') {
+            } else if (options.type === 'ai') {
                 this.updateStatusBarItem('ai');
                 fs.appendFileSync(this.aiResponseLogFile, logMessage + '\n');
                 console.log(logMessage);
@@ -110,7 +112,7 @@ export class LogManager {
             }
 
             // Reset status bar after delay for non-error messages
-            if (type !== 'error') {
+            if (options.type !== 'error') {
                 setTimeout(() => {
                     this.updateStatusBarItem();
                 }, 3000);
@@ -124,8 +126,7 @@ export class LogManager {
 
     public logError(error: any, context?: string): void {
         const errorMessage = error instanceof Error ? error.stack || error.message : String(error);
-        const contextMessage = context ? ` [Context: ${context}]` : '';
-        this.log(`Error${contextMessage}: ${errorMessage}`, 'error');
+        this.log(errorMessage, { type: 'error', context });
     }
 
     public logAIResponse(response: any, context?: string): void {
@@ -137,8 +138,7 @@ export class LogManager {
             this.logError(error, 'Failed to stringify AI response');
         }
 
-        const contextMessage = context ? ` [Context: ${context}]` : '';
-        this.log(`AI Response${contextMessage}:\n${responseStr}`, 'ai');
+        this.log(responseStr, { type: 'ai', context });
     }
 
     public show(): void {
