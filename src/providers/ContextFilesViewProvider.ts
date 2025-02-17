@@ -2,6 +2,24 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { ContextManager } from '../services/ContextManager';
 
+interface TreeNode {
+    name: string;
+    path: string;
+    children: { [key: string]: TreeNode };
+    type: 'file' | 'directory';
+    isIncluded: boolean;
+    extension: string | null;
+}
+
+interface TreeItem {
+    name: string;
+    path: string;
+    children: TreeItem[];
+    type: 'file' | 'directory';
+    isIncluded: boolean;
+    extension: string | null;
+}
+
 export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
 
@@ -33,9 +51,9 @@ export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
         webview.onDidReceiveMessage(async message => {
             try {
                 switch (message.type) {
-                    case 'removeFile':
-                        if (message.path) {
-                            await this.handleRemoveFile(message.path);
+                    case 'toggleFile':
+                        if (message.path !== undefined) {
+                            await this.handleToggleFile(message.path, message.include);
                         }
                         break;
                     case 'refresh':
@@ -138,6 +156,30 @@ export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    private async handleToggleFile(filePath: string, include: boolean) {
+        try {
+            const fullPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, filePath);
+            
+            if (include) {
+                await this.contextManager.addToContext(fullPath);
+            } else {
+                await this.contextManager.removeFromContext(fullPath);
+            }
+
+            await this.updateContextFiles();
+            
+            if (this._view) {
+                this._view.webview.postMessage({
+                    type: 'status',
+                    text: `${include ? 'Added to' : 'Removed from'} context: ${filePath}`,
+                    status: 'success'
+                });
+            }
+        } catch (error) {
+            this.handleError(error);
+        }
+    }
+
     private handleError(error: any) {
         console.error('Context Files View Error:', error);
         const errorMessage = error?.message || 'Unknown error occurred';
@@ -157,35 +199,73 @@ export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
         }
 
         try {
-            const contextFiles = await this.contextManager.getContextFiles();
             const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-            
             if (!workspaceRoot) {
                 throw new Error('No workspace folder found');
             }
 
-            const fileInfo = await Promise.all(contextFiles.map(async (file: string) => {
-                const relativePath = path.relative(workspaceRoot, file);
-                const stats = await vscode.workspace.fs.stat(vscode.Uri.file(file));
-                const isDirectory = (stats.type & vscode.FileType.Directory) !== 0;
-                const extension = path.extname(file).toLowerCase();
+            // Get all files in workspace
+            const allFiles = await vscode.workspace.findFiles('**/*', '**/node_modules/**');
+            
+            // Get current context files
+            const contextFiles = await this.contextManager.getContextFiles();
+            const contextFileSet = new Set(contextFiles);
 
-                return {
-                    path: relativePath,
-                    name: path.basename(file),
-                    isDirectory,
-                    extension,
-                    type: this.getFileType(extension, isDirectory)
-                };
-            }));
+            // Build tree structure
+            const tree = this.buildFileTree(allFiles.map(f => ({
+                path: path.relative(workspaceRoot, f.fsPath),
+                isIncluded: contextFileSet.has(f.fsPath)
+            })));
 
             this._view.webview.postMessage({
-                type: 'updateFiles',
-                files: fileInfo
+                type: 'updateTree',
+                tree: tree
             });
         } catch (error) {
             this.handleError(error);
         }
+    }
+
+    private buildFileTree(files: { path: string; isIncluded: boolean }[]): TreeItem[] {
+        const root: TreeNode = { name: 'root', path: '', children: {}, type: 'directory', isIncluded: false, extension: null };
+
+        for (const file of files) {
+            const parts = file.path.split(path.sep);
+            let current = root;
+
+            for (let i = 0; i < parts.length; i++) {
+                const part = parts[i];
+                const isLast = i === parts.length - 1;
+                
+                if (!current.children[part]) {
+                    current.children[part] = {
+                        name: part,
+                        path: parts.slice(0, i + 1).join(path.sep),
+                        children: {},
+                        type: isLast ? 'file' : 'directory',
+                        isIncluded: isLast ? file.isIncluded : false,
+                        extension: isLast ? path.extname(part).toLowerCase() : null
+                    };
+                }
+                current = current.children[part];
+            }
+        }
+
+        return this.convertToArray(root);
+    }
+
+    private convertToArray(node: TreeNode): TreeItem[] {
+        const children = Object.values(node.children).map((child: TreeNode): TreeItem => ({
+            ...child,
+            children: this.convertToArray(child)
+        }));
+
+        return children.sort((a: TreeItem, b: TreeItem) => {
+            if (a.type === b.type) {
+                return a.name.localeCompare(b.name);
+            }
+            return a.type === 'directory' ? -1 : 1;
+        });
     }
 
     private getFileType(extension: string, isDirectory: boolean): string {
@@ -347,6 +427,122 @@ export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
         .file-icon.markdown::before { content: "📝"; }
         .file-icon.image::before { content: "🖼️"; }
         .file-icon.archive::before { content: "📦"; }
+        .tree-item {
+            display: flex;
+            align-items: center;
+            padding: 2px 4px;
+            cursor: pointer;
+            user-select: none;
+            border-radius: 3px;
+            margin: 1px 0;
+            transition: background-color 0.1s;
+        }
+        .tree-item:hover {
+            background: var(--vscode-list-hoverBackground);
+        }
+        .tree-item.included {
+            background: var(--vscode-list-activeSelectionBackground);
+            color: var(--vscode-list-activeSelectionForeground);
+        }
+        .tree-item-indent {
+            width: 16px;
+            height: 100%;
+            flex-shrink: 0;
+            position: relative;
+        }
+        .tree-item-indent::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            background-color: var(--vscode-list-inactiveSelectionBackground);
+            opacity: 0.3;
+        }
+        .tree-item-content {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex: 1;
+            min-width: 0;
+            padding: 2px 0;
+        }
+        .tree-item-icon {
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 14px;
+            opacity: 0.8;
+        }
+        .tree-item-name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 13px;
+        }
+        .tree-item-actions {
+            opacity: 0;
+            display: flex;
+            gap: 4px;
+            transition: opacity 0.1s;
+        }
+        .tree-item:hover .tree-item-actions {
+            opacity: 1;
+        }
+        .tree-toggle {
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 10px;
+            opacity: 0.7;
+            transition: transform 0.1s;
+        }
+        .tree-toggle.expanded {
+            transform: rotate(90deg);
+        }
+        .file-icon {
+            font-family: codicon;
+            font-size: 16px;
+            line-height: 1;
+        }
+        .file-icon.folder { color: var(--vscode-gitDecoration-untrackedResourceForeground); }
+        .file-icon.typescript { color: var(--vscode-gitDecoration-modifiedResourceForeground); }
+        .file-icon.javascript { color: var(--vscode-gitDecoration-addedResourceForeground); }
+        .file-icon.react { color: var(--vscode-gitDecoration-conflictingResourceForeground); }
+        .file-icon.json { color: var(--vscode-gitDecoration-submoduleResourceForeground); }
+        .file-icon.html { color: var(--vscode-errorForeground); }
+        .file-icon.css { color: var(--vscode-textLink-foreground); }
+        .file-icon.markdown { color: var(--vscode-textPreformat-foreground); }
+        .file-icon.python { color: var(--vscode-debugIcon-breakpointForeground); }
+        .file-icon.java { color: var(--vscode-symbolIcon-classForeground); }
+        .status {
+            padding: 4px 8px;
+            margin-top: 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            display: none;
+            animation: fadeIn 0.2s ease-in-out;
+        }
+        .status.success {
+            background: var(--vscode-gitDecoration-addedResourceForeground);
+            color: var(--vscode-editor-background);
+        }
+        .status.error {
+            background: var(--vscode-errorForeground);
+            color: var(--vscode-editor-background);
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
 <body>
@@ -365,14 +561,15 @@ export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
                 </button>
             </div>
         </div>
-        <div id="fileList" class="file-list"></div>
+        <div id="fileTree" class="file-list"></div>
     </div>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
-        const fileList = document.getElementById('fileList');
+        const fileTree = document.getElementById('fileTree');
         const refreshButton = document.getElementById('refreshButton');
         const loadAllButton = document.getElementById('loadAllButton');
         const excludeAllButton = document.getElementById('excludeAllButton');
+        const expandedDirs = new Set();
 
         refreshButton.addEventListener('click', () => {
             vscode.postMessage({ type: 'refresh' });
@@ -389,74 +586,183 @@ export class ContextFilesViewProvider implements vscode.WebviewViewProvider {
         window.addEventListener('message', event => {
             const message = event.data;
             switch (message.type) {
-                case 'updateFiles':
-                    updateFileList(message.files);
+                case 'updateTree':
+                    renderTree(message.tree);
                     break;
                 case 'error':
                     showError(message.message);
                     break;
+                case 'status':
+                    showStatus(message.text, message.status);
+                    break;
             }
         });
 
-        function updateFileList(files) {
-            fileList.innerHTML = '';
+        function renderTree(items, level = 0) {
+            fileTree.innerHTML = '';
             
-            if (!files || files.length === 0) {
+            if (!items || items.length === 0) {
                 const emptyState = document.createElement('div');
                 emptyState.className = 'empty-state';
                 emptyState.textContent = 'No files in context';
-                fileList.appendChild(emptyState);
+                fileTree.appendChild(emptyState);
                 return;
             }
 
-            files.forEach(file => {
-                const fileItem = document.createElement('div');
-                fileItem.className = 'file-item';
+            function renderItem(item, level) {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = \`tree-item \${item.isIncluded ? 'included' : ''}\`;
                 
-                const fileIcon = document.createElement('span');
-                fileIcon.className = \`file-icon \${file.type}\`;
-                
-                const fileName = document.createElement('span');
-                fileName.className = 'file-name';
-                fileName.textContent = file.path;
-                fileName.title = file.path;
-                
-                const removeButton = document.createElement('button');
-                removeButton.className = 'remove-button';
-                removeButton.innerHTML = '✕';
-                removeButton.title = 'Remove from context';
-                
-                fileItem.appendChild(fileIcon);
-                fileItem.appendChild(fileName);
-                fileItem.appendChild(removeButton);
-                
-                fileItem.addEventListener('click', (e) => {
-                    if (e.target !== removeButton) {
+                // Add indentation
+                for (let i = 0; i < level; i++) {
+                    const indent = document.createElement('div');
+                    indent.className = 'tree-item-indent';
+                    itemDiv.appendChild(indent);
+                }
+
+                const content = document.createElement('div');
+                content.className = 'tree-item-content';
+
+                // Add toggle for directories
+                if (item.type === 'directory') {
+                    const toggle = document.createElement('span');
+                    toggle.className = \`tree-toggle \${expandedDirs.has(item.path) ? 'expanded' : ''}\`;
+                    toggle.textContent = expandedDirs.has(item.path) ? '▼' : '▶';
+                    toggle.onclick = (e) => {
+                        e.stopPropagation();
+                        if (expandedDirs.has(item.path)) {
+                            expandedDirs.delete(item.path);
+                        } else {
+                            expandedDirs.add(item.path);
+                        }
+                        renderTree(items, level);
+                    };
+                    content.appendChild(toggle);
+                }
+
+                // Add icon
+                const icon = document.createElement('span');
+                icon.className = \`tree-item-icon file-icon \${item.type === 'directory' ? 'folder' : getFileType(item.extension)}\`;
+                icon.textContent = item.type === 'directory' ? '📁' : getFileIcon(item.extension);
+                content.appendChild(icon);
+
+                // Add name
+                const name = document.createElement('span');
+                name.className = 'tree-item-name';
+                name.textContent = item.name;
+                name.title = item.path;
+                content.appendChild(name);
+
+                // Add actions
+                if (item.type === 'file') {
+                    const actions = document.createElement('div');
+                    actions.className = 'tree-item-actions';
+                    
+                    const toggleButton = document.createElement('button');
+                    toggleButton.className = 'action-button';
+                    toggleButton.textContent = item.isIncluded ? '❌' : '➕';
+                    toggleButton.title = item.isIncluded ? 'Exclude from context' : 'Include in context';
+                    toggleButton.onclick = (e) => {
+                        e.stopPropagation();
+                        vscode.postMessage({
+                            type: 'toggleFile',
+                            path: item.path,
+                            include: !item.isIncluded
+                        });
+                    };
+                    actions.appendChild(toggleButton);
+                    content.appendChild(actions);
+                }
+
+                itemDiv.appendChild(content);
+
+                // Handle click
+                itemDiv.onclick = () => {
+                    if (item.type === 'file') {
                         vscode.postMessage({
                             type: 'openFile',
-                            path: file.path
+                            path: item.path
                         });
+                    } else {
+                        if (expandedDirs.has(item.path)) {
+                            expandedDirs.delete(item.path);
+                        } else {
+                            expandedDirs.add(item.path);
+                        }
+                        renderTree(items, level);
                     }
-                });
-                
-                removeButton.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    vscode.postMessage({
-                        type: 'removeFile',
-                        path: file.path
-                    });
-                });
-                
-                fileList.appendChild(fileItem);
-            });
+                };
+
+                fileTree.appendChild(itemDiv);
+
+                // Render children if directory is expanded
+                if (item.type === 'directory' && expandedDirs.has(item.path)) {
+                    item.children.forEach(child => renderItem(child, level + 1));
+                }
+            }
+
+            items.forEach(item => renderItem(item, level));
+        }
+
+        function getFileIcon(extension) {
+            const iconMap = {
+                '.ts': 'TS',
+                '.js': 'JS',
+                '.jsx': '⚛️',
+                '.tsx': '⚛️',
+                '.json': '{ }',
+                '.html': '🌐',
+                '.css': '🎨',
+                '.md': '📝',
+                '.py': '🐍',
+                '.java': '☕',
+                '.cpp': 'C++',
+                '.c': 'C',
+                '.h': 'H',
+                '.xml': '📄',
+                '.svg': '🎨',
+                '.png': '🖼️',
+                '.jpg': '🖼️',
+                '.jpeg': '🖼️',
+                '.gif': '🖼️',
+                '.pdf': '📕',
+                '.zip': '📦',
+                '.tar': '📦',
+                '.gz': '📦',
+                '.7z': '📦'
+            };
+            return iconMap[extension] || '📄';
+        }
+
+        function getFileType(extension) {
+            const typeMap = {
+                '.ts': 'typescript',
+                '.js': 'javascript',
+                '.jsx': 'react',
+                '.tsx': 'react',
+                '.json': 'json',
+                '.html': 'html',
+                '.css': 'css',
+                '.md': 'markdown',
+                '.py': 'python',
+                '.java': 'java'
+            };
+            return typeMap[extension] || 'file';
+        }
+
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.createElement('div');
+            statusDiv.className = \`status \${type}\`;
+            statusDiv.textContent = message;
+            fileTree.insertAdjacentElement('afterend', statusDiv);
+            
+            setTimeout(() => {
+                statusDiv.remove();
+            }, 3000);
         }
 
         function showError(message) {
-            const errorDiv = document.createElement('div');
-            errorDiv.className = 'error-message';
-            errorDiv.textContent = message;
-            fileList.innerHTML = '';
-            fileList.appendChild(errorDiv);
+            showStatus(message, 'error');
         }
     </script>
 </body>

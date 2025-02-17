@@ -77,20 +77,26 @@ export class ContextManager {
             'dist',
             'build',
             '.DS_Store',
-            '*.log',
-            '*.lock',
-            '/^\\./',  // Hidden files/directories
-            '/^__.*__$/' // Python special directories
+            '.*\\.log$',  // Fixed regex pattern for log files
+            '.*\\.lock$',  // Fixed regex pattern for lock files
+            '^\\.',       // Fixed regex pattern for hidden files/directories
+            '^__.*__$'    // Fixed regex pattern for Python special directories
         ];
 
         return DEFAULT_EXCLUSIONS.some((pattern: string) => {
-            if (pattern.startsWith('/')) {
-                // Absolute path pattern
-                return new RegExp(pattern.slice(1)).test(relativePath);
+            if (pattern.startsWith('^') || pattern.endsWith('$')) {
+                // Regex pattern
+                try {
+                    const regex = new RegExp(pattern);
+                    return regex.test(relativePath);
+                } catch (error) {
+                    console.warn(`Invalid regex pattern: ${pattern}`, error);
+                    return false;
+                }
             } else {
-                // File/directory name pattern
+                // Simple glob pattern
                 const parts = relativePath.split(path.sep);
-                return parts.some(part => new RegExp(pattern).test(part));
+                return parts.some(part => part === pattern);
             }
         });
     }
