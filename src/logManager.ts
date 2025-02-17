@@ -8,34 +8,70 @@ export class LogManager {
     private errorLogFile: string;
     private aiResponseLogFile: string;
     private statusBarItem: vscode.StatusBarItem;
+    private logsDir: string;
 
     private constructor() {
         this.logChannel = vscode.window.createOutputChannel('Falalo AI');
-        const extensionPath = vscode.extensions.getExtension('falalo')?.extensionPath || '';
-        const logsDir = path.join(extensionPath, 'logs');
         
-        // Create logs directory if it doesn't exist
-        if (!fs.existsSync(logsDir)) {
-            fs.mkdirSync(logsDir, { recursive: true });
+        // Get extension path more robustly
+        const extension = vscode.extensions.getExtension('falalo.falalo');
+        if (!extension) {
+            // Fallback to a user-specific directory if extension path is not available
+            const homeDir = process.env.HOME || process.env.USERPROFILE;
+            if (!homeDir) {
+                throw new Error('Could not determine home directory for logs');
+            }
+            this.logsDir = path.join(homeDir, '.falalo', 'logs');
+        } else {
+            this.logsDir = path.join(extension.extensionPath, 'logs');
         }
 
-        this.errorLogFile = path.join(logsDir, 'error.log');
-        this.aiResponseLogFile = path.join(logsDir, 'ai_responses.log');
+        this.errorLogFile = path.join(this.logsDir, 'error.log');
+        this.aiResponseLogFile = path.join(this.logsDir, 'ai_responses.log');
+        
+        // Initialize logs directory and files
+        this.initializeLogsDirectory();
 
-        // Create status bar item
-        this.statusBarItem = vscode.window.createStatusBarItem(
-            vscode.StatusBarAlignment.Right,
-            100
-        );
-        this.statusBarItem.text = "$(output) Falalo Logs";
-        this.statusBarItem.tooltip = "Click to show Falalo AI logs";
-        this.statusBarItem.command = 'falalo.showLogs';
+        this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+        this.updateStatusBarItem();
         this.statusBarItem.show();
+    }
 
-        // Register command to show logs
-        vscode.commands.registerCommand('falalo.showLogs', () => {
-            this.show();
-        });
+    private initializeLogsDirectory() {
+        try {
+            // Create logs directory if it doesn't exist
+            if (!fs.existsSync(this.logsDir)) {
+                fs.mkdirSync(this.logsDir, { recursive: true, mode: 0o755 });
+            }
+
+            // Ensure log files exist and are writable
+            [this.errorLogFile, this.aiResponseLogFile].forEach(file => {
+                if (!fs.existsSync(file)) {
+                    fs.writeFileSync(file, '', { mode: 0o644 });
+                }
+                // Test write access
+                fs.accessSync(file, fs.constants.W_OK);
+            });
+        } catch (error) {
+            console.error('Error initializing logs directory:', error);
+            vscode.window.showErrorMessage(`Failed to initialize logs directory: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
+    private updateStatusBarItem(type?: 'error' | 'ai') {
+        if (type === 'error') {
+            this.statusBarItem.text = "$(error) Falalo Logs (Error)";
+            this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+            this.statusBarItem.tooltip = "Errors occurred - Click to view logs";
+        } else if (type === 'ai') {
+            this.statusBarItem.text = "$(sync~spin) Falalo Logs (AI)";
+            this.statusBarItem.tooltip = "AI is processing - Click to view logs";
+        } else {
+            this.statusBarItem.text = "$(output) Falalo Logs";
+            this.statusBarItem.backgroundColor = undefined;
+            this.statusBarItem.tooltip = "Click to view Falalo AI logs";
+        }
+        this.statusBarItem.command = 'falalo.showLogs';
     }
 
     public static getInstance(): LogManager {
@@ -49,41 +85,40 @@ export class LogManager {
         const timestamp = new Date().toISOString();
         const logMessage = `[${timestamp}] ${message}`;
 
-        // Always show in output channel
-        this.logChannel.appendLine(logMessage);
+        try {
+            // Always show in output channel
+            this.logChannel.appendLine(logMessage);
 
-        // Log errors to error log file
-        if (type === 'error') {
-            fs.appendFileSync(this.errorLogFile, logMessage + '\n');
-            // Update status bar for errors
-            this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-            this.statusBarItem.text = "$(error) Falalo Logs (Error)";
-            setTimeout(() => {
-                this.statusBarItem.backgroundColor = undefined;
-                this.statusBarItem.text = "$(output) Falalo Logs";
-            }, 3000);
-        }
+            // Update status bar and log to file based on type
+            if (type === 'error') {
+                this.updateStatusBarItem('error');
+                fs.appendFileSync(this.errorLogFile, logMessage + '\n');
+                console.error(logMessage);
+                
+                // Show error notification
+                vscode.window.showErrorMessage(`Falalo Error: ${message}`, 'Show Logs').then(selection => {
+                    if (selection === 'Show Logs') {
+                        this.show();
+                    }
+                });
+            } else if (type === 'ai') {
+                this.updateStatusBarItem('ai');
+                fs.appendFileSync(this.aiResponseLogFile, logMessage + '\n');
+                console.log(logMessage);
+            } else {
+                console.log(logMessage);
+            }
 
-        // Log AI responses to AI log file
-        if (type === 'ai') {
-            fs.appendFileSync(this.aiResponseLogFile, logMessage + '\n');
-            // Update status bar for AI responses
-            this.statusBarItem.text = "$(sync~spin) Falalo Logs (AI)";
-            setTimeout(() => {
-                this.statusBarItem.text = "$(output) Falalo Logs";
-            }, 1000);
-        }
-
-        // Show errors in the console as well
-        if (type === 'error') {
-            console.error(logMessage);
-            vscode.window.showErrorMessage(`Falalo Error: ${message}`, 'Show Logs').then(selection => {
-                if (selection === 'Show Logs') {
-                    this.show();
-                }
-            });
-        } else {
-            console.log(logMessage);
+            // Reset status bar after delay for non-error messages
+            if (type !== 'error') {
+                setTimeout(() => {
+                    this.updateStatusBarItem();
+                }, 3000);
+            }
+        } catch (error) {
+            console.error('Failed to write log:', error);
+            // Attempt to show error in VS Code UI even if logging fails
+            vscode.window.showErrorMessage(`Failed to write log: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
 
@@ -94,8 +129,16 @@ export class LogManager {
     }
 
     public logAIResponse(response: any, context?: string): void {
+        let responseStr: string;
+        try {
+            responseStr = typeof response === 'string' ? response : JSON.stringify(response, null, 2);
+        } catch (error) {
+            responseStr = '[Unable to stringify response]';
+            this.logError(error, 'Failed to stringify AI response');
+        }
+
         const contextMessage = context ? ` [Context: ${context}]` : '';
-        this.log(`AI Response${contextMessage}:\n${JSON.stringify(response, null, 2)}`, 'ai');
+        this.log(`AI Response${contextMessage}:\n${responseStr}`, 'ai');
     }
 
     public show(): void {

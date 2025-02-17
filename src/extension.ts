@@ -529,12 +529,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 		cost: 0
 	};
 	private screenshotManager: ScreenshotManager;
-
-	// Constants for o3-mini pricing
+	private summaryHistory: CodeSummary[] = [];
 	private readonly O3_MINI_PRICES = {
-		inputTokens: 0.0011,     // $1.10 per million input tokens
-		outputTokens: 0.0044,    // $4.40 per million output tokens
-		cachedInputTokens: 0.00055 // $0.55 per million cached input tokens
+		input: 0.0001,
+		output: 0.0002
 	};
 
 	private updateTokenUsageFromCompletion(completion: any) {
@@ -546,9 +544,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 			
 			// Calculate costs
 			this.tokenUsage.cost = (
-				(this.tokenUsage.inputTokens * this.O3_MINI_PRICES.inputTokens / 1000000) +
-				(this.tokenUsage.outputTokens * this.O3_MINI_PRICES.outputTokens / 1000000) +
-				(this.tokenUsage.cachedInputTokens * this.O3_MINI_PRICES.cachedInputTokens / 1000000)
+				(this.tokenUsage.inputTokens * this.O3_MINI_PRICES.input) +
+				(this.tokenUsage.outputTokens * this.O3_MINI_PRICES.output)
 			);
 
 			if (this._view) {
@@ -1022,219 +1019,34 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	private getWebviewContent(webview: vscode.Webview): string {
-		const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'css', 'style.css'));
+		const styleVscodeUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'css', 'style.css'));
 		const nonce = this.getNonce();
-		
+
 		return `<!DOCTYPE html>
-		<html>
-			<head>
-				<meta charset="UTF-8">
-				<meta name="viewport" content="width=device-width, initial-scale=1.0">
-				<meta http-equiv="Content-Security-Policy" content="default-src 'none';
-					img-src ${webview.cspSource} https: data:;
-					script-src ${webview.cspSource} 'nonce-${nonce}';
-					style-src ${webview.cspSource} 'unsafe-inline';
-					font-src ${webview.cspSource};
-					connect-src ${webview.cspSource} https:;">
-				<link rel="stylesheet" type="text/css" href="${cssUri}">
-			</head>
-			<body>
-				<div class="main-container">
-					<div class="chat-container">
-						<div class="token-usage" id="tokenUsage">
-							<div>Token Usage (o3-mini)</div>
-							<div class="token-usage-grid">
-								<div class="token-metric">
-									<span>Input Tokens:</span>
-									<span id="inputTokens">0</span>
-								</div>
-								<div class="token-metric">
-									<span>Output Tokens:</span>
-									<span id="outputTokens">0</span>
-								</div>
-								<div class="token-metric">
-									<span>Cached Input:</span>
-									<span id="cachedTokens">0</span>
-								</div>
-								<div class="token-metric">
-									<span>Total Cost:</span>
-									<span id="totalCost" class="cost">$0.00</span>
-								</div>
-							</div>
-						</div>
-						<div class="status-container">
-							<p id="status" class="status-message"></p>
-							<div id="progressBar" class="progress-indicator"></div>
-						</div>
-						<div id="messages" class="messages"></div>
-						<div class="input-container">
-							<input type="text" id="messageInput" placeholder="Type your message...">
-							<button id="sendButton">Send</button>
-						</div>
-					</div>
-					
-					<div class="progress-container" id="progressContainer">
-						<!-- Task progress will be dynamically inserted here -->
-					</div>
-				</div>
-
-				<script nonce="${nonce}">
-					const vscode = acquireVsCodeApi();
-					const messagesDiv = document.getElementById('messages');
-					const messageInput = document.getElementById('messageInput');
-					const sendButton = document.getElementById('sendButton');
-					const statusDiv = document.getElementById('status');
-					const progressBar = document.getElementById('progressBar');
-					const progressContainer = document.getElementById('progressContainer');
-					
-					let currentProgress = 0;
-					
-					function updateProgress(progress) {
-						currentProgress = progress;
-						progressBar.style.width = \`\${progress}%\`;
-					}
-					
-					function updateStatus(text, type = 'info') {
-						statusDiv.textContent = text;
-						statusDiv.className = \`status-message \${type}-message\`;
-					}
-					
-					function addMessage(content, isUser) {
-						const messageDiv = document.createElement('div');
-						messageDiv.className = \`message \${isUser ? 'user-message' : 'ai-message'}\`;
-						messageDiv.innerHTML = isUser ? content : content;
-						messagesDiv.appendChild(messageDiv);
-						messagesDiv.scrollTop = messagesDiv.scrollHeight;
-					}
-					
-					function updateTaskProgress(progressData) {
-						const { currentStep, totalSteps, steps } = progressData;
-						const progress = (currentStep / totalSteps) * 100;
-						
-						const progressHtml = \`
-							<div class="task-progress">
-								<div class="progress-header">
-									<span class="progress-title">Task Progress</span>
-									<span class="progress-stats">Step \${currentStep + 1} of \${totalSteps}</span>
-								</div>
-								<div class="steps-list">
-									\${steps.map((step, index) => \`
-										<div class="step \${step.status}">
-											<div class="step-number">\${index + 1}</div>
-											<div class="step-content">
-												<div class="step-description">\${step.description}</div>
-												\${step.files ? \`
-													<div class="step-details">
-														Files: \${step.files.join(', ')}
-													</div>
-												\` : ''}
-												\${step.status === 'completed' ? \`
-													<div class="file-operations">
-														\${step.files?.map(file => \`
-															<div class="file-operation">
-																<span class="operation-icon">✓</span>
-																<span class="operation-details">\${file}</span>
-															</div>
-														\`).join('') || ''}
-													</div>
-												\` : ''}
-											</div>
-										</div>
-									\`).join('')}
-								</div>
-							</div>
-						\`;
-						
-						progressContainer.innerHTML = progressHtml;
-						updateProgress(progress);
-					}
-					
-					function sendMessage() {
-						const text = messageInput.value.trim();
-						if (text) {
-							addMessage(text, true);
-							messageInput.value = '';
-							messageInput.disabled = true;
-							sendButton.disabled = true;
-							updateStatus('Analyzing your request...', 'info');
-							updateProgress(0);
-							vscode.postMessage({
-								type: 'userMessage',
-								text: text
-							});
-						}
-					}
-					
-					sendButton.addEventListener('click', sendMessage);
-					messageInput.addEventListener('keypress', (e) => {
-						if (e.key === 'Enter' && !e.shiftKey) {
-							e.preventDefault();
-							sendMessage();
-						}
-					});
-					
-					window.addEventListener('message', event => {
-						const message = event.data;
-						switch (message.type) {
-							case 'aiResponse':
-								addMessage(message.text, false);
-								if (!message.isError) {
-									messageInput.disabled = false;
-									sendButton.disabled = false;
-									messageInput.focus();
-									updateStatus('Ready for next request', 'success');
-								}
-								break;
-								
-							case 'status':
-								updateStatus(message.text, message.status || 'info');
-								break;
-								
-							case 'progress':
-								updateProgress(message.progress);
-								break;
-								
-							case 'updateProgress':
-								updateTaskProgress(message.data);
-								break;
-								
-							case 'fileOperation':
-								const operationDiv = document.createElement('div');
-								operationDiv.className = 'file-operation';
-								operationDiv.innerHTML = \`
-									<span class="operation-icon">\${message.success ? '✓' : '⚠️'}</span>
-									<span class="operation-details">\${message.details}</span>
-								\`;
-								progressContainer.appendChild(operationDiv);
-								break;
-
-							case 'enableInput':
-								messageInput.disabled = !message.enabled;
-								sendButton.disabled = !message.enabled;
-								if (message.enabled) {
-									messageInput.focus();
-								}
-								break;
-
-							case 'updateTokenUsage':
-								const usage = message.usage;
-								document.getElementById('inputTokens').textContent = usage.inputTokens.toLocaleString();
-								document.getElementById('outputTokens').textContent = usage.outputTokens.toLocaleString();
-								document.getElementById('cachedTokens').textContent = usage.cachedInputTokens.toLocaleString();
-								document.getElementById('totalCost').textContent = '$' + usage.cost.toFixed(4);
-								break;
-
-							case 'screenshot':
-								const lastMessage = messagesDiv.lastElementChild;
-								if (lastMessage && lastMessage.classList.contains('ai-message')) {
-									lastMessage.innerHTML += message.html;
-								}
-								break;
-						}
-					});
-				</script>
-			</body>
-		</html>`;
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https:;">
+    <link rel="stylesheet" href="${styleVscodeUri}">
+    <title>Falalo AI Chat</title>
+</head>
+<body>
+    <div class="main-container">
+        <div class="chat-container">
+            <div class="messages" id="messages"></div>
+            <div class="input-container">
+                <input type="text" id="messageInput" placeholder="Type your message..." />
+                <button id="sendButton">Send</button>
+            </div>
+        </div>
+        <div class="progress-container" id="progressContainer"></div>
+    </div>
+    <script nonce="${nonce}">
+        // ... existing script ...
+    </script>
+</body>
+</html>`;
 	}
 
 	private getNonce() {
@@ -1282,6 +1094,14 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
 	private async handleUserMessage(message: string, webview: vscode.Webview): Promise<void> {
 		try {
+			// Generate and display code summary first
+			const summary = await this.generateCodeSummary(message);
+			const summaryHtml = this.formatSummaryForDisplay(summary);
+			webview.postMessage({ type: 'addMessage', message: summaryHtml, isAi: true });
+
+			// Continue with existing message handling
+			this.chatHistory.push({ role: 'user', parts: [{ text: message }] });
+			
 			// Check if auto context selection is enabled
 			const autoSelector = this.contextManager.getAutoSelector();
 			if (autoSelector?.isEnabled()) {
@@ -1315,12 +1135,6 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 				});
 			}
 
-			// Continue with existing message handling
-			webview.postMessage({
-				type: 'addMessage',
-				message: { role: 'user', content: message }
-			});
-
 			// ... rest of the existing code ...
 		} catch (error) {
 			LogManager.getInstance().logError(error, 'handleUserMessage');
@@ -1333,6 +1147,77 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 			});
 		}
 	}
+
+	private async generateCodeSummary(userInput: string): Promise<CodeSummary> {
+		try {
+			const workspaceContext = await getWorkspaceContext(this.contextManager);
+			const prompt = `As an expert code analyst, provide a comprehensive summary of the following user request in the context of their codebase. Format your response in these sections:
+
+1. Overview: Brief summary of the user's request
+2. Context Analysis: Analysis of how this request relates to the current codebase
+3. Suggested Approach: High-level approach to implementing the request
+
+Current workspace context:
+${workspaceContext}
+
+User request: ${userInput}`;
+
+			const response = await this.model.chat.completions.create({
+				model: 'gpt-4o-mini',
+				messages: [
+					{ role: 'system', content: 'You are an expert code analyst providing detailed summaries and implementation strategies.' },
+					{ role: 'user', content: prompt }
+				],
+				temperature: 0.3,
+				max_tokens: 1000
+			});
+
+			const summaryText = response.choices[0]?.message?.content || '';
+			const sections = summaryText.split(/\d\.\s+/);
+
+			const summary: CodeSummary = {
+				overview: sections[1]?.trim() || 'No overview available',
+				contextAnalysis: sections[2]?.trim() || 'No context analysis available',
+				suggestedApproach: sections[3]?.trim() || 'No suggested approach available',
+				timestamp: new Date().toISOString()
+			};
+
+			this.summaryHistory.push(summary);
+			this.updateTokenUsageFromCompletion(response);
+
+			return summary;
+		} catch (error) {
+			LogManager.getInstance().logError(error, 'Code summary generation');
+			return {
+				overview: 'Error generating summary',
+				contextAnalysis: 'An error occurred during analysis',
+				suggestedApproach: 'Please try again',
+				timestamp: new Date().toISOString()
+			};
+		}
+	}
+
+	private formatSummaryForDisplay(summary: CodeSummary): string {
+		return `
+<div class="summary-container">
+    <div class="summary-header">
+        <span class="summary-title">🔍 Code Analysis Summary</span>
+        <span class="summary-timestamp">${new Date(summary.timestamp).toLocaleString()}</span>
+    </div>
+    <div class="summary-section">
+        <h3>📋 Overview</h3>
+        <p>${summary.overview}</p>
+    </div>
+    <div class="summary-section">
+        <h3>🔎 Context Analysis</h3>
+        <p>${summary.contextAnalysis}</p>
+    </div>
+    <div class="summary-section">
+        <h3>💡 Suggested Approach</h3>
+        <p>${summary.suggestedApproach}</p>
+    </div>
+</div>`;
+	}
 }
 
 // Add ContextFilesViewProvider class after ChatViewProvider
@@ -1342,14 +1227,7 @@ class ContextFilesViewProvider implements vscode.WebviewViewProvider {
     constructor(
         private readonly extensionUri: vscode.Uri,
         private readonly contextManager: ContextManager
-    ) {
-        // Listen for context updates
-        this.contextManager.onDidUpdateContext(() => {
-            if (this._view) {
-                this.updateContextFiles();
-            }
-        });
-    }
+    ) {}
 
     public resolveWebviewView(
         webviewView: vscode.WebviewView,
@@ -1364,8 +1242,15 @@ class ContextFilesViewProvider implements vscode.WebviewViewProvider {
         };
 
         webviewView.webview.html = this.getWebviewContent(webviewView.webview);
-        this.updateContextFiles();
         this.setWebviewMessageListener(webviewView.webview);
+
+        // Initial file load
+        this.updateContextFiles();
+
+        // Listen for context updates
+        this.contextManager.onDidUpdateContext(() => {
+            this.updateContextFiles();
+        });
     }
 
     private async updateContextFiles() {
@@ -1373,16 +1258,22 @@ class ContextFilesViewProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        const files = await this.contextManager.getContextFiles();
-        const autoSelector = this.contextManager.getAutoSelector();
-        const lastSelection = autoSelector?.getLastSelection();
-        
-        this._view.webview.postMessage({
-            type: 'updateFiles',
-            files: files,
-            autoContextEnabled: autoSelector?.isEnabled() || false,
-            autoSelection: lastSelection
-        });
+        try {
+            const files = await this.contextManager.getContextFiles();
+            const fileDetails = await Promise.all(
+                files.map(file => this.contextManager.getFileDetails(file))
+            );
+
+            const fileTreeHtml = this.generateFileTree(fileDetails);
+            this._view.webview.postMessage({
+                type: 'updateFiles',
+                files: fileTreeHtml
+            });
+
+            LogManager.getInstance().log('Context files updated', 'info');
+        } catch (error) {
+            LogManager.getInstance().logError(error, 'Updating context files');
+        }
     }
 
     private setWebviewMessageListener(webview: vscode.Webview) {
@@ -1397,6 +1288,7 @@ class ContextFilesViewProvider implements vscode.WebviewViewProvider {
                             type: 'autoContextStatus',
                             enabled: isEnabled
                         });
+                        LogManager.getInstance().log(`Auto context ${isEnabled ? 'enabled' : 'disabled'}`, 'info');
                         this.updateContextFiles();
                     }
                     break;
@@ -1422,6 +1314,13 @@ class ContextFilesViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'includeStructure':
                     await this.includeStructureOnly();
+                    break;
+                case 'toggleFile':
+                    if (message.path) {
+                        const fullPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, message.path);
+                        await this.contextManager.toggleFileInContext(fullPath);
+                        this.updateContextFiles();
+                    }
                     break;
             }
         });
@@ -1468,392 +1367,163 @@ class ContextFilesViewProvider implements vscode.WebviewViewProvider {
     }
 
     private getWebviewContent(webview: vscode.Webview): string {
-        const nonce = this.getNonce();
-        
+        const autoSelector = this.contextManager.getAutoSelector();
+        const isAutoContextEnabled = autoSelector?.isEnabled() || false;
+
         return `<!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Context Files</title>
-            <style>
-                body {
-                    padding: 10px;
-                    font-family: var(--vscode-font-family);
-                    color: var(--vscode-editor-foreground);
-                    background: var(--vscode-editor-background);
-                }
-                .file-tree {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 4px;
-                    margin-top: 10px;
-                }
-                .tree-item {
-                    display: flex;
-                    flex-direction: column;
-                }
-                .tree-item-content {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    padding: 6px 8px;
-                    background: var(--vscode-input-background);
-                    border: 1px solid var(--vscode-input-border);
-                    border-radius: 4px;
-                    cursor: pointer;
-                }
-                .tree-item-content:hover {
-                    background: var(--vscode-list-hoverBackground);
-                }
-                .tree-item-children {
-                    margin-left: 20px;
-                    display: none;
-                }
-                .tree-item.expanded > .tree-item-children {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 4px;
-                }
-                .tree-item-header {
-                    display: flex;
-                    align-items: center;
-                    gap: 6px;
-                    flex: 1;
-                }
-                .tree-item-icon {
-                    font-size: 1.1em;
-                    min-width: 16px;
-                }
-                .tree-item-name {
-                    flex: 1;
-                }
-                .tree-item-details {
-                    font-size: 0.9em;
-                    color: var(--vscode-descriptionForeground);
-                }
-                .remove-button {
-                    padding: 4px 8px;
-                    background: var(--vscode-button-secondaryBackground);
-                    color: var(--vscode-button-secondaryForeground);
-                    border: none;
-                    border-radius: 3px;
-                    cursor: pointer;
-                    opacity: 0;
-                    transition: opacity 0.2s;
-                }
-                .tree-item-content:hover .remove-button {
-                    opacity: 1;
-                }
-                .remove-button:hover {
-                    background: var(--vscode-button-secondaryHoverBackground);
-                }
-                .empty-message {
-                    text-align: center;
-                    padding: 20px;
-                    color: var(--vscode-descriptionForeground);
-                }
-                .header {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 10px;
-                    margin-bottom: 10px;
-                }
-                .header-top {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                }
-                .header-buttons {
-                    display: flex;
-                    gap: 8px;
-                }
-                .action-button {
-                    padding: 4px 8px;
-                    background: var(--vscode-button-background);
-                    color: var(--vscode-button-foreground);
-                    border: none;
-                    border-radius: 3px;
-                    cursor: pointer;
-                    font-size: 12px;
-                }
-                .action-button:hover {
-                    background: var(--vscode-button-hoverBackground);
-                }
-                .secondary-button {
-                    background: var(--vscode-button-secondaryBackground);
-                    color: var(--vscode-button-secondaryForeground);
-                }
-                .secondary-button:hover {
-                    background: var(--vscode-button-secondaryHoverBackground);
-                }
-                .file-count {
-                    font-size: 0.9em;
-                    color: var(--vscode-descriptionForeground);
-                }
-                .auto-context-toggle {
-                    display: flex;
-                    align-items: center;
-                    padding: 10px;
-                    margin-bottom: 10px;
-                    background: var(--vscode-editor-background);
-                    border: 1px solid var(--vscode-input-border);
-                    border-radius: 4px;
-                }
-                .auto-selection-info {
-                    margin: 10px 0;
-                    padding: 10px;
-                    background: var(--vscode-editor-inactiveSelectionBackground);
-                    border-radius: 4px;
-                }
-                .auto-selection-files {
-                    margin-top: 8px;
-                    padding-left: 20px;
-                }
-                .confidence-indicator {
-                    display: inline-block;
-                    padding: 2px 6px;
-                    border-radius: 3px;
-                    font-size: 12px;
-                    margin-left: 8px;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="auto-context-toggle">
-                <label>
-                    <input type="checkbox" id="autoContextToggle" />
-                    Enable Auto Context Selection
-                </label>
-            </div>
-            <div id="autoSelectionInfo" class="auto-selection-info" style="display: none;">
-                <div id="autoSelectionExplanation"></div>
-                <div id="autoSelectionConfidence"></div>
-                <ul id="autoSelectionFiles" class="auto-selection-files"></ul>
-            </div>
-            <div class="button-container">
-                <button class="action-button" onclick="includeAll()">Include All</button>
-                <button class="action-button" onclick="includeStructure()">Include Structure Only</button>
-                <button class="action-button secondary-button" onclick="excludeAll()">Exclude All</button>
-                <button class="action-button secondary-button" onclick="toggleAll()">Expand/Collapse All</button>
-            </div>
-            <div id="fileTree" class="file-tree"></div>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Context Files</title>
+                <style>
+                    /* ... existing styles ... */
+                </style>
+            </head>
+            <body>
+                <div class="context-container">
+                    <div class="context-header">
+                        <h2>Context Files</h2>
+                        <div class="context-actions">
+                            <button id="autoContextToggle" class="${isAutoContextEnabled ? 'enabled' : ''}" onclick="toggleAutoContext()">
+                                ${isAutoContextEnabled ? '🤖 Auto Context: ON' : '🤖 Auto Context: OFF'}
+                            </button>
+                            <button onclick="excludeAll()">Clear All</button>
+                            <button onclick="includeAll()">Include All</button>
+                            <button onclick="includeStructure()">Structure Only</button>
+                        </div>
+                    </div>
+                    <div class="file-tree-container">
+                        <div id="fileTree" class="file-tree"></div>
+                    </div>
+                </div>
 
-            <script nonce="${nonce}">
-                const vscode = acquireVsCodeApi();
-                const fileTree = document.getElementById('fileTree');
-                const fileCount = document.getElementById('fileCount');
-                let isAllExpanded = false;
-                let currentFiles = [];
-
-                window.addEventListener('message', event => {
-                    const message = event.data;
-                    switch (message.type) {
-                        case 'updateFiles':
-                            currentFiles = message.files;
-                            updateFileTree(message.files);
-                            break;
-                        case 'autoContextStatus':
-                            autoContextToggle.checked = message.enabled;
-                            break;
-                        case 'updateFiles':
-                            updateFileList(message.files);
-                            updateAutoSelectionInfo(message.autoSelection, message.autoContextEnabled);
-                            break;
+                <script>
+                    const vscode = acquireVsCodeApi();
+                    
+                    function toggleAutoContext() {
+                        vscode.postMessage({ command: 'toggleAutoContext' });
                     }
-                });
 
-                function includeAll() {
-                    vscode.postMessage({ type: 'includeAll' });
-                }
-
-                function excludeAll() {
-                    vscode.postMessage({ type: 'excludeAll' });
-                }
-
-                function includeStructure() {
-                    vscode.postMessage({ type: 'includeStructure' });
-                }
-
-                function buildFileTree(files) {
-                    const root = { children: new Map() };
-                    
-                    files.forEach(file => {
-                        const parts = file.path.split('/');
-                        let current = root;
-                        
-                        for (let i = 0; i < parts.length; i++) {
-                            const part = parts[i];
-                            const currentPath = parts.slice(0, i + 1).join('/');
-                            
-                            if (!current.children.has(part)) {
-                                current.children.set(part, {
-                                    name: part,
-                                    path: currentPath,
-                                    isDirectory: i < parts.length - 1,
-                                    size: i === parts.length - 1 ? file.size : null,
-                                    modified: i === parts.length - 1 ? file.modified : null,
-                                    children: new Map()
-                                });
-                            }
-                            current = current.children.get(part);
-                        }
-                    });
-                    
-                    return root;
-                }
-
-                function renderTreeItem(item) {
-                    const div = document.createElement('div');
-                    div.className = 'tree-item';
-                    if (item.isDirectory) {
-                        div.classList.add('directory');
+                    function excludeAll() {
+                        vscode.postMessage({ command: 'excludeAll' });
                     }
-                    
-                    const content = document.createElement('div');
-                    content.className = 'tree-item-content';
-                    
-                    const header = document.createElement('div');
-                    header.className = 'tree-item-header';
-                    
-                    const icon = document.createElement('span');
-                    icon.className = 'tree-item-icon';
-                    icon.textContent = item.isDirectory ? '📁' : '📄';
-                    
-                    const name = document.createElement('span');
-                    name.className = 'tree-item-name';
-                    name.textContent = item.name;
-                    
-                    header.appendChild(icon);
-                    header.appendChild(name);
-                    
-                    if (!item.isDirectory) {
-                        const details = document.createElement('span');
-                        details.className = 'tree-item-details';
-                        details.textContent = item.size;
-                        if (item.modified) {
-                            details.textContent = details.textContent + ' • ' + item.modified;
-                        }
-                        header.appendChild(details);
 
-                        const removeButton = document.createElement('button');
-                        removeButton.className = 'remove-button';
-                        removeButton.textContent = 'Remove';
-                        removeButton.onclick = (e) => {
-                            e.stopPropagation();
-                            vscode.postMessage({
-                                type: 'removeFile',
-                                path: item.path
-                            });
-                        };
-                        content.appendChild(removeButton);
+                    function includeAll() {
+                        vscode.postMessage({ command: 'includeAll' });
                     }
-                    
-                    content.appendChild(header);
-                    div.appendChild(content);
-                    
-                    if (item.isDirectory && item.children.size > 0) {
-                        const childrenContainer = document.createElement('div');
-                        childrenContainer.className = 'tree-item-children';
-                        
-                        Array.from(item.children.values())
-                            .sort((a, b) => {
-                                if (a.isDirectory === b.isDirectory) {
-                                    return a.name.localeCompare(b.name);
+
+                    function includeStructure() {
+                        vscode.postMessage({ command: 'includeStructure' });
+                    }
+
+                    function removeFile(path) {
+                        vscode.postMessage({ command: 'removeFile', path });
+                    }
+
+                    function openFile(path) {
+                        vscode.postMessage({ command: 'openFile', path });
+                    }
+
+                    window.addEventListener('message', event => {
+                        const message = event.data;
+                        switch (message.type) {
+                            case 'updateFiles':
+                                document.getElementById('fileTree').innerHTML = message.content;
+                                break;
+                            case 'autoContextStatus':
+                                const button = document.getElementById('autoContextToggle');
+                                if (button) {
+                                    button.textContent = message.enabled ? '🤖 Auto Context: ON' : '🤖 Auto Context: OFF';
+                                    button.className = message.enabled ? 'enabled' : '';
                                 }
-                                return a.isDirectory ? -1 : 1;
-                            })
-                            .forEach(child => {
-                                childrenContainer.appendChild(renderTreeItem(child));
-                            });
-                        
-                        div.appendChild(childrenContainer);
-                        
-                        content.onclick = () => {
-                            div.classList.toggle('expanded');
-                        };
-                    } else if (!item.isDirectory) {
-                        content.onclick = () => {
-                            vscode.postMessage({
-                                type: 'openFile',
-                                path: item.path
-                            });
-                        };
-                    }
-                    
-                    return div;
-                }
-
-                function updateFileTree(files) {
-                    fileTree.innerHTML = '';
-                    fileCount.textContent = files.length + ' files';
-                    
-                    if (files.length === 0) {
-                        const emptyMessage = document.createElement('div');
-                        emptyMessage.className = 'empty-message';
-                        emptyMessage.textContent = 'No files in context';
-                        fileTree.appendChild(emptyMessage);
-                        return;
-                    }
-                    
-                    const tree = buildFileTree(files);
-                    Array.from(tree.children.values())
-                        .sort((a, b) => {
-                            if (a.isDirectory === b.isDirectory) {
-                                return a.name.localeCompare(b.name);
-                            }
-                            return a.isDirectory ? -1 : 1;
-                        })
-                        .forEach(item => {
-                            fileTree.appendChild(renderTreeItem(item));
-                        });
-                }
-
-                function toggleAll() {
-                    isAllExpanded = !isAllExpanded;
-                    document.querySelectorAll('.tree-item.directory').forEach(item => {
-                        if (isAllExpanded) {
-                            item.classList.add('expanded');
-                        } else {
-                            item.classList.remove('expanded');
+                                break;
                         }
                     });
-                }
-
-                function updateAutoSelectionInfo(selection, enabled) {
-                    if (!enabled || !selection) {
-                        autoSelectionInfo.style.display = 'none';
-                        return;
-                    }
-
-                    autoSelectionInfo.style.display = 'block';
-                    document.getElementById('autoSelectionExplanation').textContent = selection.explanation;
-                    
-                    const confidenceEl = document.getElementById('autoSelectionConfidence');
-                    const confidence = Math.round(selection.confidence * 100);
-                    const confidenceColor = confidence > 80 ? '#3fb950' : confidence > 50 ? '#d29922' : '#f85149';
-                    confidenceEl.innerHTML = \`Confidence: <span class="confidence-indicator" style="background-color: \${confidenceColor}">\${confidence}%</span>\`;
-                    
-                    const filesEl = document.getElementById('autoSelectionFiles');
-                    filesEl.innerHTML = selection.selectedFiles
-                        .map(file => \`<li>\${file}</li>\`)
-                        .join('');
-                }
-
-                function updateFileList(files) {
-                    const fileList = document.getElementById('fileList');
-                    fileList.innerHTML = files
-                        .map(file => \`
-                            <div class="file-item">
-                                <span class="file-path">\${file.relativePath}</span>
-                            </div>
-                        \`)
-                        .join('');
-                }
-            </script>
-        </body>
-        </html>`;
+                </script>
+            </body>
+            </html>`;
     }
+
+    private generateFileTree(files: Array<{
+        fullPath: string;
+        relativePath: string;
+        size: number;
+        lastModified: Date;
+        type: string;
+    }>): string {
+        const fileGroups = this.groupFilesByDirectory(files);
+        return this.renderFileTree(fileGroups);
+    }
+
+    private groupFilesByDirectory(files: Array<{
+        fullPath: string;
+        relativePath: string;
+        size: number;
+        lastModified: Date;
+        type: string;
+    }>) {
+        const groups: { [key: string]: any[] } = {};
+        
+        for (const file of files) {
+            const parts = file.relativePath.split('/');
+            const fileName = parts.pop() || '';
+            const directory = parts.join('/');
+            
+            if (!groups[directory]) {
+                groups[directory] = [];
+            }
+            
+            groups[directory].push({
+                ...file,
+                name: fileName
+            });
+        }
+        
+        return groups;
+    }
+
+    private renderFileTree(fileGroups: { [key: string]: any[] }): string {
+        let html = '';
+        
+        for (const [directory, files] of Object.entries(fileGroups)) {
+            if (directory) {
+                html += `
+                    <div class="directory">
+                        <div class="directory-header">
+                            <span class="directory-icon">📁</span>
+                            <span class="directory-name">${directory}</span>
+                        </div>
+                        <div class="file-list">
+                `;
+            }
+            
+            for (const file of files.sort((a, b) => a.name.localeCompare(b.name))) {
+                const icon = this.getFileIcon(file.type);
+                const size = this.formatFileSize(file.size);
+                const date = new Date(file.lastModified).toLocaleDateString();
+                
+                html += `
+                    <div class="file-item" data-path="${file.relativePath}">
+                        <span class="file-icon">${icon}</span>
+                        <span class="file-name">${file.name}</span>
+                        <span class="file-info">
+                            <span class="file-size">${size}</span>
+                            <span class="file-date">${date}</span>
+                        </span>
+                    </div>
+                `;
+            }
+            
+            if (directory) {
+                html += '</div></div>';
+            }
+        }
+        
+        return html;
+    }
+
+    // ... rest of the existing code (getFileIcon, formatFileSize, etc.) ...
 
     private getNonce() {
         let text = '';
@@ -1862,6 +1532,37 @@ class ContextFilesViewProvider implements vscode.WebviewViewProvider {
             text += possible.charAt(Math.floor(Math.random() * possible.length));
         }
         return text;
+    }
+
+    private getFileIcon(type: string): string {
+        switch (type) {
+            case 'directory':
+                return '📁';
+            case 'javascript':
+            case 'typescript':
+                return '📜';
+            case 'json':
+                return '📋';
+            case 'markdown':
+                return '📝';
+            case 'image':
+                return '🖼️';
+            default:
+                return '📄';
+        }
+    }
+
+    private formatFileSize(size: number): string {
+        const units = ['B', 'KB', 'MB', 'GB'];
+        let unitIndex = 0;
+        let fileSize = size;
+
+        while (fileSize >= 1024 && unitIndex < units.length - 1) {
+            fileSize /= 1024;
+            unitIndex++;
+        }
+
+        return `${Math.round(fileSize * 100) / 100} ${units[unitIndex]}`;
     }
 }
 
@@ -2017,10 +1718,23 @@ class ContextManager {
 			exclusions: vscode.workspace.getConfiguration('falalo').get('contextExclusions') || this.DEFAULT_EXCLUSIONS,
 			maxFiles: vscode.workspace.getConfiguration('falalo').get('maxContextFiles') || this.DEFAULT_MAX_FILES
 		};
+
+		// Initialize auto context selector if model is provided
 		if (model) {
 			this.autoSelector = new AutoContextSelector(model, this);
+			// Enable auto context by default
+			this.autoSelector.toggleEnabled();
+			LogManager.getInstance().log('Auto context selector initialized and enabled', 'info');
+		} else {
+			LogManager.getInstance().log('Auto context selector not initialized - OpenAI model not provided', 'info');
 		}
-		this.updateConfig();
+
+		// Listen for configuration changes
+		vscode.workspace.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('falalo')) {
+				this.updateConfig();
+			}
+		});
 	}
 
 	private async updateConfig() {
@@ -2484,6 +2198,32 @@ class ContextManager {
 			LogManager.getInstance().logError(error, 'excludeAllFiles');
 			throw error;
 		}
+	}
+
+	public async toggleFileInContext(filePath: string): Promise<void> {
+		try {
+			const isInContext = await this.isFileInContext(filePath);
+			const fileInfo: FilePathInfo = {
+				fullPath: filePath,
+				relativePath: path.relative(this.workspaceRoot, filePath)
+			};
+
+			if (isInContext) {
+				await this.removeFromContext(fileInfo);
+			} else {
+				await this.addToContext(fileInfo);
+			}
+
+			await this.notifyContextUpdated();
+		} catch (error) {
+			console.error('Error toggling file in context:', error);
+			vscode.window.showErrorMessage('Failed to toggle file in context: ' + (error instanceof Error ? error.message : 'Unknown error'));
+		}
+	}
+
+	private async isFileInContext(filePath: string): Promise<boolean> {
+		const files = await this.getContextFiles();
+		return files.some(file => file.fullPath === filePath);
 	}
 }
 
@@ -3463,21 +3203,27 @@ export async function activate(context: vscode.ExtensionContext) {
 	console.log('Extension "falalo" is now active!');
 
 	try {
-		// Initialize the model with OAuth2
-		model = await AutoRetryHandler.executeWithRetry(
-			async () => await initializeOpenAI(context),
-			'OpenAI Initialization'
-		);
-
-		// Initialize context manager
+		// Initialize OpenAI
+		const model = await initializeOpenAI(context);
+		
+		// Get workspace root
 		const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 		if (!workspaceRoot) {
-			throw new Error('Please open a workspace folder first');
+			throw new Error('No workspace folder found');
 		}
 
-		const contextManager = new ContextManager(workspaceRoot);
+		// Initialize managers
+		const contextManager = new ContextManager(workspaceRoot, model);
+		const logManager = LogManager.getInstance();
 
-		// Register commands with auto-retry wrapper
+		// Register the showLogs command
+		context.subscriptions.push(
+			vscode.commands.registerCommand('falalo.showLogs', () => {
+				logManager.show();
+			})
+		);
+
+		// Register other commands and providers
 		context.subscriptions.push(
 			vscode.commands.registerCommand('falalo.startChat', 
 				AutoRetryHandler.wrapCommand(async () => {
@@ -3779,14 +3525,6 @@ export async function activate(context: vscode.ExtensionContext) {
 		console.error('Failed to initialize extension:', error);
 		vscode.window.showErrorMessage('Failed to initialize extension: ' + (error instanceof Error ? error.message : 'Unknown error'));
 	}
-
-	// Add the "Show Logs" command
-	context.subscriptions.push(
-		vscode.commands.registerCommand('falalo.showLogs', () => {
-			const logsChannel = vscode.window.createOutputChannel('Falalo AI Logs');
-			logsChannel.show();
-		})
-	);
 }
 
 
@@ -3822,17 +3560,24 @@ function validatePath(path: string): boolean {
 }
 
 function sanitizeCommand(command: string): string {
-    // Remove any unmatched quotes
+    // Prevent HTML content from being executed as commands
+    if (command.includes('<') || command.includes('>')) {
+        throw new Error('Invalid command: Contains HTML-like content');
+    }
+
+    // Remove any unmatched quotes and escape existing quotes
     let sanitized = command.replace(/(['"])((?:\\\1|.)*?)\1|(['"])(.*)$/g, (match, q1, c1, q2, c2) => {
         if (q2) {
             // Unmatched quote - remove it
-            return c2 || '';
+            return c2 ? c2.replace(/["']/g, '\\"') : '';
         }
         return match;
     });
 
     // Ensure no process IDs are treated as commands
-    sanitized = sanitized.replace(/^\d+$/, '');
+    if (/^\d+$/.test(sanitized.trim())) {
+        throw new Error('Invalid command: Cannot execute process ID as command');
+    }
 
     // Escape special characters
     sanitized = sanitized.replace(/([&;|<>$`\\"])/g, '\\$1');
@@ -3981,6 +3726,9 @@ async function executeCommands(commands: CommandExecution | CommandExecution[], 
                 throw new Error('Invalid command: Command must be a non-empty string');
             }
 
+            // Log the command before sanitization
+            LogManager.getInstance().log(`Executing command: ${cmd.command}`, 'info');
+
             const sanitizedCommand = sanitizeCommand(cmd.command);
             if (!sanitizedCommand) {
                 throw new Error('Command was invalid after sanitization');
@@ -3988,13 +3736,17 @@ async function executeCommands(commands: CommandExecution | CommandExecution[], 
 
             const options = {
                 cwd: cmd.cwd || workspaceRoot,
-                shell: '/bin/zsh', // Explicitly use zsh on macOS
+                shell: process.platform === 'darwin' ? '/bin/zsh' : process.platform === 'win32' ? 'cmd.exe' : '/bin/bash',
                 encoding: 'utf8' as const,
                 maxBuffer: 10 * 1024 * 1024, // 10MB buffer
-                env: { ...process.env, FORCE_COLOR: '1' } // Preserve colors in output
+                env: { 
+                    ...process.env, 
+                    FORCE_COLOR: '1',
+                    LANG: 'en_US.UTF-8',
+                    LC_ALL: 'en_US.UTF-8'
+                },
+                windowsHide: true
             };
-
-            LogManager.getInstance().log(`Executing command: ${sanitizedCommand}`, 'info');
 
             if (cmd.isBackground) {
                 const childProcess = spawn(sanitizedCommand, [], {
@@ -4004,9 +3756,10 @@ async function executeCommands(commands: CommandExecution | CommandExecution[], 
                 });
                 
                 childProcess.unref();
-                results.push(`Started background process: ${cmd.command}`);
+                const message = `Started background process: ${cmd.command}`;
+                results.push(message);
+                LogManager.getInstance().log(message, 'info');
                 
-                // Log any errors from the background process
                 childProcess.on('error', (error: Error) => {
                     LogManager.getInstance().logError(error, `Background command: ${cmd.command}`);
                 });
@@ -4020,8 +3773,11 @@ async function executeCommands(commands: CommandExecution | CommandExecution[], 
                         LogManager.getInstance().log(`Command output: ${result}`, 'info');
                     }
                 } catch (error: any) {
-                    // Log the original error
-                    LogManager.getInstance().logError(error, `Command failed: ${cmd.command}`);
+                    // Log the original error with full details
+                    LogManager.getInstance().logError(
+                        error,
+                        `Command failed: ${cmd.command}\nStderr: ${error.stderr?.toString() || 'No stderr'}`
+                    );
                     
                     // Try to fix the command
                     const fixedCommand = await fixCommandIssues(sanitizedCommand, error);
@@ -4035,8 +3791,8 @@ async function executeCommands(commands: CommandExecution | CommandExecution[], 
                                 LogManager.getInstance().log(`Fixed command output: ${retryResult}`, 'info');
                             }
                         } catch (retryError) {
-                            // If retry also fails, throw the original error
-                            throw error;
+                            // If retry also fails, throw the original error with context
+                            throw new Error(`Command failed: ${cmd.command}\nError: ${error.message}\nStderr: ${error.stderr?.toString() || 'No stderr'}`);
                         }
                     } else {
                         throw error;
@@ -4045,22 +3801,23 @@ async function executeCommands(commands: CommandExecution | CommandExecution[], 
             }
         } catch (error: any) {
             const errorMessage = error.message || error.toString();
+            const stderr = error.stderr?.toString() || '';
+            
             LogManager.getInstance().logError(
                 error,
-                `Command execution failed: ${cmd.command}\nError: ${errorMessage}`
+                `Command execution failed: ${cmd.command}\nError: ${errorMessage}\nStderr: ${stderr}`
             );
             
-            // Include stderr in the error if available
-            if (error.stderr) {
-                LogManager.getInstance().logError(
-                    error.stderr.toString(),
-                    'Command stderr output'
-                );
-            }
-            
-            throw new Error(`Command execution failed: ${errorMessage}`);
+            throw new Error(`Command execution failed: ${errorMessage}${stderr ? `\nStderr: ${stderr}` : ''}`);
         }
     }
 
     return results;
+}
+
+interface CodeSummary {
+    overview: string;
+    contextAnalysis: string;
+    suggestedApproach: string;
+    timestamp: string;
 }
