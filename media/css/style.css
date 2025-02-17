@@ -159,4 +159,112 @@ body {
     margin: 5px 0;
     border-left: 3px solid var(--vscode-inputValidation-infoBorder);
     background: var(--vscode-inputValidation-infoBackground);
+}
+
+.task-progress {
+    background: var(--vscode-editor-inactiveSelectionBackground);
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 15px;
+}
+
+.progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--vscode-input-border);
+}
+
+.progress-title {
+    font-weight: bold;
+    font-size: 1.1em;
+}
+
+.progress-stats {
+    color: var(--vscode-descriptionForeground);
+}
+
+.steps-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.step {
+    display: flex;
+    gap: 12px;
+    padding: 10px;
+    border-radius: 6px;
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-input-border);
+    transition: all 0.3s ease;
+}
+
+.step.pending {
+    opacity: 0.7;
+}
+
+.step.in-progress {
+    border-color: var(--vscode-progressBar-background);
+    background: var(--vscode-editor-inactiveSelectionBackground);
+}
+
+.step.completed {
+    border-color: var(--vscode-testing-iconPassed);
+    background: var(--vscode-inputValidation-okBackground);
+}
+
+.step-number {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+    font-weight: bold;
+    flex-shrink: 0;
+}
+
+.step-content {
+    flex: 1;
+}
+
+.step-description {
+    margin-bottom: 6px;
+    font-weight: 500;
+}
+
+.step-details {
+    font-size: 0.9em;
+    color: var(--vscode-descriptionForeground);
+}
+
+.file-operations {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.file-operation {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.9em;
+    padding: 4px 8px;
+    background: var(--vscode-editor-background);
+    border-radius: 4px;
+}
+
+.operation-icon {
+    font-size: 1.1em;
+}
+
+.operation-details {
+    color: var(--vscode-descriptionForeground);
+    word-break: break-all;
 } 

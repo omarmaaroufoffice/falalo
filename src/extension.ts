@@ -632,15 +632,31 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 								}
 							});
 
-							// Get context using context manager
+							// Process each step in the task plan
+							while (taskPlan.currentStep < taskPlan.totalSteps) {
+								const currentStep = taskPlan.steps[taskPlan.currentStep];
+								currentStep.status = 'in-progress';
+								
+								// Update progress for current step
+								webview.postMessage({
+									type: 'updateProgress',
+									data: {
+										currentStep: taskPlan.currentStep,
+										totalSteps: taskPlan.totalSteps,
+										steps: taskPlan.steps
+									}
+								});
+
 								webview.postMessage({
 									type: 'status',
-								text: 'Loading workspace context...',
+									text: `Executing step ${taskPlan.currentStep + 1}: ${currentStep.description}`,
 									status: 'info'
 								});
-							const context = await getWorkspaceContext(this.contextManager);
-							console.log('Context files loaded:', context.split('=== File:').length - 1);
 
+								// Get context for the current step
+								const context = await getWorkspaceContext(this.contextManager);
+								
+								// Create completion for current step
 								const completion = await model.chat.completions.create({
 									model: "o3-mini",
 									reasoning_effort: "medium",
@@ -648,11 +664,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 									messages: [
 										{
 											role: "system",
-										content: `${SYSTEM_PROMPT}\n\nWorkspace Context:\n${context}\n\nCurrent Task Plan:\n${JSON.stringify(taskPlan, null, 2)}`
-									},
-									{
-										role: "user",
-										content: message.text
+											content: `${SYSTEM_PROMPT}\n\nWorkspace Context:\n${context}\n\nCurrent Task Plan:\n${JSON.stringify(taskPlan, null, 2)}\n\nCurrent Step (${taskPlan.currentStep + 1}/${taskPlan.totalSteps}): ${currentStep.description}`
+										},
+										{
+											role: "user",
+											content: `Execute this step: ${currentStep.description}\n\nProvide the necessary code, file operations, or commands to complete this specific step.`
 										}
 									],
 									store: true
@@ -662,47 +678,76 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 									throw new Error('Empty response from AI');
 								}
 
-							// Update token usage
+								// Update token usage
 								this.updateTokenUsageFromCompletion(completion);
 
 								const response = completion.choices[0].message.content;
 								
-							// Process and detect commands in the response
-							await this.detectAndExecuteCommands(response, webview);
+								// Process and detect commands in the response
+								await this.detectAndExecuteCommands(response, webview);
+
+								// Process file operations if any
+								const fileOperations = await handleFileOperations(response, vscode.workspace.workspaceFolders![0].uri.fsPath);
+								if (fileOperations.length > 0) {
+									currentStep.files = fileOperations;
+								}
 
 								// Process and display response
 								let processedResponse = processResponseWithCodeBlocks(response);
-
+								
+								// Add step completion message
+								processedResponse = `<div class="success-message">✓ Step ${taskPlan.currentStep + 1} completed: ${currentStep.description}</div>\n${processedResponse}`;
+								
+								// Update chat history
 								this.chatHistory.push(
-								{ role: 'user', parts: [{ text: message.text }] },
+									{ role: 'user', parts: [{ text: currentStep.description }] },
 									{ role: 'model', parts: [{ text: response }] }
 								);
 
-							// Update task progress
-							taskPlan.currentStep++;
-							webview.postMessage({
-								type: 'updateProgress',
-								data: {
-									currentStep: taskPlan.currentStep,
-									totalSteps: taskPlan.totalSteps,
-									steps: taskPlan.steps.map((step, index) => ({
-										...step,
-										status: index < taskPlan.currentStep ? 'completed' : 
-												index === taskPlan.currentStep ? 'in-progress' : 'pending'
-									}))
-								}
-							});
-
+								// Mark step as completed
+								currentStep.status = 'completed';
+								
+								// Show step response
 								webview.postMessage({
 									type: 'aiResponse',
 									text: processedResponse,
 									hasCode: response.includes('CODE_BLOCK_START')
 								});
 
+								// Move to next step
+								taskPlan.currentStep++;
+								
+								// Update progress after step completion
+								webview.postMessage({
+									type: 'updateProgress',
+									data: {
+										currentStep: taskPlan.currentStep,
+										totalSteps: taskPlan.totalSteps,
+										steps: taskPlan.steps
+									}
+								});
+
+								// Add a small delay between steps
+								await new Promise(resolve => setTimeout(resolve, 1000));
+							}
+
+							// All steps completed
 							webview.postMessage({
 								type: 'status',
-								text: 'Ready for next request',
+								text: 'All tasks completed successfully!',
 								status: 'success'
+							});
+
+							webview.postMessage({
+								type: 'aiResponse',
+								text: `<div class="success-message">✨ All tasks completed successfully! The project has been set up according to your request.</div>`,
+								isComplete: true
+							});
+
+							// Re-enable input through webview message
+							webview.postMessage({
+								type: 'enableInput',
+								enabled: true
 							});
 							
 						}, 'AI Chat Processing');
@@ -740,6 +785,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 					type: 'aiResponse',
 					text: `<div class="error-message">Error: ${errorMessage}</div>`,
 					isError: true
+				});
+
+				// Re-enable input through webview message
+				webview.postMessage({
+					type: 'enableInput',
+					enabled: true
 				});
 			}
 		});
@@ -1091,6 +1142,15 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 								\`;
 								progressContainer.appendChild(operationDiv);
 								break;
+
+							case 'enableInput':
+								messageInput.disabled = !message.enabled;
+								sendButton.disabled = !message.enabled;
+								if (message.enabled) {
+									messageInput.focus();
+								}
+								break;
+
 							case 'updateTokenUsage':
 								const usage = message.usage;
 								document.getElementById('inputTokens').textContent = usage.inputTokens.toLocaleString();
@@ -1098,6 +1158,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 								document.getElementById('cachedTokens').textContent = usage.cachedInputTokens.toLocaleString();
 								document.getElementById('totalCost').textContent = '$' + usage.cost.toFixed(4);
 								break;
+
 							case 'screenshot':
 								const lastMessage = messagesDiv.lastElementChild;
 								if (lastMessage && lastMessage.classList.contains('ai-message')) {
@@ -1140,8 +1201,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 				};
 			} catch (error) {
 				console.error(`Error reading file ${fileInfo.relativePath}:`, error);
-        return null;
-    }
+				return null;
+			}
 		}));
 
 		webview.postMessage({
@@ -1813,7 +1874,7 @@ class ContextManager {
 		for (const callback of this.onContextUpdated) {
 			try {
 				await callback();
-        } catch (error) {
+			} catch (error) {
 				console.error('Error in context update callback:', error);
 			}
 		}
@@ -2808,8 +2869,8 @@ async function getWorkspaceContext(contextManager: ContextManager): Promise<stri
 function validateTaskPlan(plan: any): boolean {
 	if (typeof plan !== 'object' || plan === null) {
 		console.error('Plan is not an object:', plan);
-            return false;
-        }
+		return false;
+	}
 
 	if (typeof plan.totalSteps !== 'number' || plan.totalSteps <= 0) {
 		console.error('Invalid totalSteps:', plan.totalSteps);
@@ -2908,30 +2969,17 @@ async function evaluateRequest(request: string): Promise<TaskPlan> {
 
 // Function to update chat panel with task progress
 function updateTaskProgress(webview: vscode.Webview, taskPlan: TaskPlan) {
-	const progressHtml = `
-		<div class="task-progress">
-			<div class="progress-header">
-				Progress: Step ${taskPlan.currentStep + 1} of ${taskPlan.totalSteps}
-			</div>
-			<div class="steps-list">
-				${taskPlan.steps.map((step: TaskStep, index: number) => `
-					<div class="step ${step.status}">
-						<div class="step-number">${index + 1}</div>
-						<div class="step-description">${step.description}</div>
-						${step.files ? `
-							<div class="step-files">
-								Files: ${step.files.join(', ')}
-							</div>
-						` : ''}
-					</div>
-				`).join('')}
-			</div>
-		</div>
-	`;
-
 	webview.postMessage({
 		type: 'updateProgress',
-		html: progressHtml
+        data: {
+            currentStep: taskPlan.currentStep,
+            totalSteps: taskPlan.totalSteps,
+            steps: taskPlan.steps.map((step, index) => ({
+                ...step,
+                status: index < taskPlan.currentStep ? 'completed' : 
+                        index === taskPlan.currentStep ? 'in-progress' : 'pending'
+            }))
+        }
 	});
 }
 
@@ -2996,7 +3044,7 @@ class AICodeReviewer {
 			this.showReviewResults(review, diagnostics);
 
 			return review;
-        } catch (error) {
+		} catch (error) {
 			console.error('Error performing code review:', error);
 			throw new Error(`Failed to review file: ${error instanceof Error ? error.message : 'Unknown error'}`);
 		}
