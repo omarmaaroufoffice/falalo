@@ -1,0 +1,2 @@
+src/extension.ts → src/fileOrganizer.ts
+src/extension.ts → src/screenshot.ts

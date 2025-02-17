@@ -186,6 +186,118 @@ function getSizeCategory(size: number): string {
 class AutoRetryHandler {
     private static readonly MAX_RETRIES = 50;
     private static readonly RETRY_DELAY = 2000; // 2 seconds
+    private static readonly DEPENDENCY_PATTERNS = {
+        MODULE_NOT_FOUND: /Cannot find module '([^']+)'/,
+        REQUIRE_ERROR: /Error: require\(\) of '([^']+)'/,
+        IMPORT_ERROR: /ImportError: No module named '([^']+)'/,
+        NPM_MISSING: /npm ERR! missing: ([^@]+)/,
+        PYTHON_IMPORT: /ModuleNotFoundError: No module named '([^']+)'/
+    };
+
+    private static async detectMissingDependency(error: any): Promise<string | null> {
+        const errorString = error?.message || error?.toString() || '';
+        
+        for (const [key, pattern] of Object.entries(this.DEPENDENCY_PATTERNS)) {
+            const match = errorString.match(pattern);
+            if (match && match[1]) {
+                return match[1].trim();
+            }
+        }
+
+        // Check for nested dependency issues
+        if (errorString.includes('node_modules')) {
+            const nestedMatch = errorString.match(/node_modules[/\\]([^/\\]+)/);
+            if (nestedMatch && nestedMatch[1]) {
+                return nestedMatch[1].trim();
+            }
+        }
+
+        return null;
+    }
+
+    private static async resolveDependencyIssue(dependency: string, context: string): Promise<boolean> {
+        try {
+            // First, check package.json for existing dependencies
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (!workspaceRoot) return false;
+
+            const packageJsonPath = path.join(workspaceRoot, 'package.json');
+            let packageJson: any;
+
+            try {
+                const packageJsonContent = await fs.promises.readFile(packageJsonPath, 'utf-8');
+                packageJson = JSON.parse(packageJsonContent);
+            } catch (e) {
+                console.log('No package.json found or invalid format');
+                return false;
+            }
+
+            // Check if it's a transitive dependency
+            const allDeps = {
+                ...packageJson.dependencies,
+                ...packageJson.devDependencies
+            };
+
+            // Get the dependency tree
+            const depTree = await this.getDependencyTree(workspaceRoot);
+            const transitiveVersions = this.findTransitiveDependencyVersions(depTree, dependency);
+
+            if (transitiveVersions.length > 0) {
+                // Install the most compatible version
+                const version = transitiveVersions[0];
+                console.log(`Installing ${dependency}@${version} as detected from dependency tree`);
+                await executeCommands({
+                    command: `npm install ${dependency}@${version}`,
+                    description: `Installing missing dependency ${dependency}`
+                }, workspaceRoot);
+                return true;
+            }
+
+            // If not found in transitive dependencies, try installing latest
+            console.log(`Installing latest version of ${dependency}`);
+            await executeCommands({
+                command: `npm install ${dependency}`,
+                description: `Installing missing dependency ${dependency}`
+            }, workspaceRoot);
+            return true;
+
+        } catch (error) {
+            console.error(`Failed to resolve dependency ${dependency}:`, error);
+            return false;
+        }
+    }
+
+    private static async getDependencyTree(workspaceRoot: string): Promise<any> {
+        try {
+            const { execSync } = require('child_process');
+            const output = execSync('npm ls --json', { cwd: workspaceRoot });
+            return JSON.parse(output.toString());
+        } catch (error) {
+            console.error('Failed to get dependency tree:', error);
+            return {};
+        }
+    }
+
+    private static findTransitiveDependencyVersions(tree: any, targetDep: string): string[] {
+        const versions = new Set<string>();
+
+        const traverse = (node: any) => {
+            if (!node || !node.dependencies) return;
+
+            // Check direct dependencies
+            if (node.dependencies[targetDep]) {
+                versions.add(node.dependencies[targetDep].version);
+            }
+
+            // Traverse nested dependencies
+            for (const dep of Object.values(node.dependencies)) {
+                traverse(dep as any);
+            }
+        };
+
+        traverse(tree);
+        return Array.from(versions);
+    }
 
     static async executeWithRetry<T>(
         operation: () => Promise<T>,
@@ -195,6 +307,7 @@ class AutoRetryHandler {
     ): Promise<T> {
         let lastError: any;
         let lastSolution: string | null = null;
+        let resolvedDependencies = new Set<string>();
         
         for (let attempt = 1; attempt <= this.MAX_RETRIES; attempt++) {
             try {
@@ -208,7 +321,19 @@ class AutoRetryHandler {
                     onError(error, attempt);
                 }
 
-                // Get AI to analyze the error and suggest a fix
+                // Check for missing dependencies
+                const missingDep = await this.detectMissingDependency(error);
+                if (missingDep && !resolvedDependencies.has(missingDep)) {
+                    console.log(`Detected missing dependency: ${missingDep}`);
+                    resolvedDependencies.add(missingDep);
+                    
+                    if (await this.resolveDependencyIssue(missingDep, context)) {
+                        console.log(`Successfully resolved dependency: ${missingDep}`);
+                        continue;
+                    }
+                }
+
+                // If dependency resolution didn't work, try AI analysis
                 try {
                     const errorAnalysis = await this.getAIErrorAnalysis(error, context, lastSolution, attempt);
                     
@@ -216,22 +341,18 @@ class AutoRetryHandler {
                         throw new Error(`AI suggests stopping: ${errorAnalysis.explanation}`);
                     }
 
-                    // Apply the suggested fix if provided
                     if (errorAnalysis.solution) {
                         lastSolution = errorAnalysis.solution;
                         console.log(`Applying AI suggested fix (Attempt ${attempt}):`, errorAnalysis.solution);
                         
-                        // Execute the AI's solution
                         try {
                             await this.executeAISolution(errorAnalysis.solution, context);
                             console.log('AI solution applied successfully');
                             
-                            // Show the applied fix to the user
                             vscode.window.showInformationMessage(
                                 `Applied AI fix (Attempt ${attempt}): ${errorAnalysis.explanation}`
                             );
                             
-                            // Continue with the original operation
                             continue;
                         } catch (solutionError) {
                             console.error('Error applying AI solution:', solutionError);
@@ -241,12 +362,10 @@ class AutoRetryHandler {
                     console.error('Error getting AI analysis:', aiError);
                 }
 
-                // If we've reached max retries, throw the last error
                 if (attempt === this.MAX_RETRIES) {
                     throw new Error(`Failed after ${this.MAX_RETRIES} attempts in ${context}. Last error: ${error instanceof Error ? error.message : 'Unknown error'}`);
                 }
 
-                // Wait before retrying
                 await new Promise(resolve => setTimeout(resolve, this.RETRY_DELAY));
             }
         }
@@ -458,7 +577,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 		const screenshotsUri = vscode.Uri.file(path.join(this.extensionUri.fsPath, 'screenshots'));
 		const mediaUri = vscode.Uri.joinPath(this.extensionUri, 'media');
 		const cssUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'css', 'style.css'));
-		
+
 		webviewView.webview.options = {
 			enableScripts: true,
 			enableCommandUris: true,
@@ -492,17 +611,17 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 								text: 'Analyzing your request...',
 								status: 'info'
 							});
-
+							
 							// First, evaluate and plan the tasks
 							webview.postMessage({
 								type: 'status',
 								text: 'Planning tasks...',
 								status: 'info'
 							});
-
+							
 							const taskPlan = await evaluateRequest(message.text);
 							console.log('Task plan created:', taskPlan);
-
+							
 							// Show initial task plan
 							webview.postMessage({
 								type: 'updateProgress',
@@ -514,50 +633,50 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 							});
 
 							// Get context using context manager
-							webview.postMessage({
-								type: 'status',
+								webview.postMessage({
+									type: 'status',
 								text: 'Loading workspace context...',
-								status: 'info'
-							});
+									status: 'info'
+								});
 							const context = await getWorkspaceContext(this.contextManager);
 							console.log('Context files loaded:', context.split('=== File:').length - 1);
-							
-							const completion = await model.chat.completions.create({
-								model: "o3-mini",
-								reasoning_effort: "medium",
-								max_completion_tokens: 100000,
-								messages: [
-									{
-										role: "system",
+
+								const completion = await model.chat.completions.create({
+									model: "o3-mini",
+									reasoning_effort: "medium",
+									max_completion_tokens: 100000,
+									messages: [
+										{
+											role: "system",
 										content: `${SYSTEM_PROMPT}\n\nWorkspace Context:\n${context}\n\nCurrent Task Plan:\n${JSON.stringify(taskPlan, null, 2)}`
 									},
 									{
 										role: "user",
 										content: message.text
-									}
-								],
-								store: true
-							});
+										}
+									],
+									store: true
+								});
 
-							if (!completion.choices || completion.choices.length === 0) {
-								throw new Error('Empty response from AI');
-							}
+								if (!completion.choices || completion.choices.length === 0) {
+									throw new Error('Empty response from AI');
+								}
 
 							// Update token usage
-							this.updateTokenUsageFromCompletion(completion);
+								this.updateTokenUsageFromCompletion(completion);
 
-							const response = completion.choices[0].message.content;
-							
+								const response = completion.choices[0].message.content;
+								
 							// Process and detect commands in the response
 							await this.detectAndExecuteCommands(response, webview);
 
-							// Process and display response
-							let processedResponse = processResponseWithCodeBlocks(response);
-							
-							this.chatHistory.push(
+								// Process and display response
+								let processedResponse = processResponseWithCodeBlocks(response);
+
+								this.chatHistory.push(
 								{ role: 'user', parts: [{ text: message.text }] },
-								{ role: 'model', parts: [{ text: response }] }
-							);
+									{ role: 'model', parts: [{ text: response }] }
+								);
 
 							// Update task progress
 							taskPlan.currentStep++;
@@ -574,11 +693,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 								}
 							});
 
-							webview.postMessage({
-								type: 'aiResponse',
-								text: processedResponse,
-								hasCode: response.includes('CODE_BLOCK_START')
-							});
+								webview.postMessage({
+									type: 'aiResponse',
+									text: processedResponse,
+									hasCode: response.includes('CODE_BLOCK_START')
+								});
 
 							webview.postMessage({
 								type: 'status',
@@ -596,7 +715,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 									await this.contextManager.removeFromContext(fullPath);
 									await this.updateContextFiles(webview);
 									
-							webview.postMessage({
+									webview.postMessage({
 										type: 'fileOperation',
 										success: true,
 										details: `Removed from context: ${message.path}`
@@ -616,7 +735,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 				
 				const errorMessage = error?.message || 'Unknown error occurred';
 				vscode.window.showErrorMessage(`Error: ${errorMessage}`);
-								
+				
 				webview.postMessage({
 					type: 'aiResponse',
 					text: `<div class="error-message">Error: ${errorMessage}</div>`,
@@ -1021,8 +1140,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 				};
 			} catch (error) {
 				console.error(`Error reading file ${fileInfo.relativePath}:`, error);
-				return null;
-			}
+        return null;
+    }
 		}));
 
 		webview.postMessage({
@@ -1694,7 +1813,7 @@ class ContextManager {
 		for (const callback of this.onContextUpdated) {
 			try {
 				await callback();
-			} catch (error) {
+        } catch (error) {
 				console.error('Error in context update callback:', error);
 			}
 		}
@@ -2689,8 +2808,8 @@ async function getWorkspaceContext(contextManager: ContextManager): Promise<stri
 function validateTaskPlan(plan: any): boolean {
 	if (typeof plan !== 'object' || plan === null) {
 		console.error('Plan is not an object:', plan);
-		return false;
-	}
+            return false;
+        }
 
 	if (typeof plan.totalSteps !== 'number' || plan.totalSteps <= 0) {
 		console.error('Invalid totalSteps:', plan.totalSteps);
@@ -2723,24 +2842,24 @@ function validateTaskPlan(plan: any): boolean {
 // Function to evaluate and plan tasks
 async function evaluateRequest(request: string): Promise<TaskPlan> {
 	try {
-								const completion = await model.chat.completions.create({
-									model: "o3-mini",
-									reasoning_effort: "medium",
-									max_completion_tokens: 100000,
-									messages: [
-										{
-											role: "system",
+        const completion = await model.chat.completions.create({
+            model: "o3-mini",
+            reasoning_effort: "medium",
+            max_completion_tokens: 100000,
+            messages: [
+                {
+                    role: "system",
                     content: TASK_PLANNING_PROMPT
                 },
                 {
                     role: "user",
                     content: request
-										}
-									],
-									store: true
-								});
+                }
+            ],
+            store: true
+        });
 
-								if (!completion.choices || completion.choices.length === 0) {
+        if (!completion.choices || completion.choices.length === 0) {
 			throw new Error('Failed to generate task plan');
 		}
 
@@ -2810,7 +2929,7 @@ function updateTaskProgress(webview: vscode.Webview, taskPlan: TaskPlan) {
 		</div>
 	`;
 
-								webview.postMessage({
+	webview.postMessage({
 		type: 'updateProgress',
 		html: progressHtml
 	});
@@ -2877,7 +2996,7 @@ class AICodeReviewer {
 			this.showReviewResults(review, diagnostics);
 
 			return review;
-		} catch (error) {
+        } catch (error) {
 			console.error('Error performing code review:', error);
 			throw new Error(`Failed to review file: ${error instanceof Error ? error.message : 'Unknown error'}`);
 		}
